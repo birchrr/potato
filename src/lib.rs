@@ -3,6 +3,9 @@ pub mod files;
 pub mod tweaks;
 pub mod version;
 pub mod app;
+pub mod engine;
+#[cfg(windows)]
+pub mod tray;
 #[cfg(windows)]
 pub mod helper;
 #[cfg(not(windows))]

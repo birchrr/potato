@@ -62,13 +62,21 @@ pub fn apply_basic_settings(xml: &str, plan: &Plan) -> String {
     out
 }
 
-/// The Fast Flags Ultra Low turns on.
-pub const ULTRA_LOW_FLAGS: [(&str, &str); 5] = [
+/// The Fast Flags Ultra Low turns on: every flag on Roblox's allowlist that lowers quality or work.
+pub const ULTRA_LOW_FLAGS: [(&str, &str); 13] = [
     ("DFFlagTextureQualityOverrideEnabled", "True"),
     ("DFIntTextureQualityOverride", "0"),
     ("FIntFRMMaxGrassDistance", "0"),
     ("FIntFRMMinGrassDistance", "0"),
     ("FIntDebugForceMSAASamples", "0"),
+    ("DFIntDebugFRMQualityLevelOverride", "1"),        // render quality below the menu's lowest
+    ("DFFlagDisableDPIScale", "True"),                 // draws at a lower resolution on scaled screens
+    ("DFIntCSGLevelOfDetailSwitchingDistance", "0"),   // built shapes always use their lowest-detail model
+    ("DFIntCSGLevelOfDetailSwitchingDistanceL12", "0"),
+    ("DFIntCSGLevelOfDetailSwitchingDistanceL23", "0"),
+    ("DFIntCSGLevelOfDetailSwitchingDistanceL34", "0"),
+    ("FFlagDebugSkyGray", "True"),
+    ("DFFlagDebugPauseVoxelizer", "True"),             // stops lighting updates: less CPU, lighting can look frozen
 ];
 
 /// ClientAppSettings.json with Potato's flags added (Ultra Low on) or taken out (off). Every other flag

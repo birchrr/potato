@@ -48,43 +48,22 @@ pub struct Account {
     pub max_clients: u32,
 }
 
-/// One-click starting points for an account.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Preset {
-    Main,
-    Alt,
-    UltraLow,
-}
-
-impl Preset {
-    pub const ALL: [Preset; 3] = [Preset::Main, Preset::Alt, Preset::UltraLow];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Preset::Main => "Main",
-            Preset::Alt => "Alt",
-            Preset::UltraLow => "Ultra Low",
+impl Default for Account {
+    /// what an account gets before anyone changes it: lowest graphics at 30 FPS, opened maximized
+    fn default() -> Self {
+        Account {
+            on: true,
+            plan: Plan { lowest_graphics: true, fps_cap: Some(30), ultra_low: false, maximized: true },
+            priority: Priority::Normal,
+            efficiency: false,
+            max_clients: 0,
         }
-    }
-
-    pub fn account(self) -> Account {
-        let plan = |fps, ultra_low| Plan { lowest_graphics: true, fps_cap: Some(fps), ultra_low, maximized: true };
-        match self {
-            Preset::Main => Account { on: true, plan: plan(30, false), priority: Priority::Normal, efficiency: false, max_clients: 0 },
-            Preset::Alt => Account { on: true, plan: plan(25, false), priority: Priority::BelowNormal, efficiency: false, max_clients: 0 },
-            Preset::UltraLow => Account { on: true, plan: plan(15, true), priority: Priority::Idle, efficiency: true, max_clients: 0 },
-        }
-    }
-
-    /// The preset an account's settings match, if any (Close Extra Clients doesn't count).
-    pub fn of(a: &Account) -> Option<Preset> {
-        Preset::ALL.into_iter().find(|p| Account { on: a.on, max_clients: a.max_clients, ..p.account() } == *a)
     }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
-    /// by Windows account SID; accounts not listed get `Preset::Main`
+    /// by Windows account SID; accounts not listed get `Account::default()`
     pub accounts: BTreeMap<String, Account>,
     /// logical cores each client gets to itself (0 = off: Windows decides)
     pub cores_per_client: u32,
@@ -104,11 +83,11 @@ impl Default for Config {
 
 impl Config {
     pub fn account(&self, sid: &str) -> Account {
-        self.accounts.get(sid).cloned().unwrap_or_else(|| Preset::Main.account())
+        self.accounts.get(sid).cloned().unwrap_or_default()
     }
 
     pub fn account_mut(&mut self, sid: &str) -> &mut Account {
-        self.accounts.entry(sid.to_string()).or_insert_with(|| Preset::Main.account())
+        self.accounts.entry(sid.to_string()).or_default()
     }
 
     pub fn to_json(&self) -> String {
@@ -129,7 +108,7 @@ impl Config {
         let Ok(v) = serde_json::from_str::<Value>(text) else { return d };
         let num = |v: &Value, or: u32| v.as_u64().map(|n| n as u32).unwrap_or(or);
         let accounts = v["accounts"].as_object().map(|m| m.iter().map(|(sid, a)| {
-            let base = Preset::Main.account();
+            let base = Account::default();
             let flag = |k: &str, or: bool| a[k].as_bool().unwrap_or(or);
             (sid.clone(), Account {
                 on: flag("on", base.on),
@@ -193,7 +172,8 @@ mod tests {
     #[test]
     fn round_trips() {
         let mut c = Config { cores_per_client: 2, trim_minutes: 0, clean_above: 85, restart_hours: 6, ..Config::default() };
-        c.accounts.insert("S-1-5-21-1".into(), Preset::UltraLow.account());
+        c.account_mut("S-1-5-21-1").plan.ultra_low = true;
+        c.account_mut("S-1-5-21-1").priority = Priority::Idle;
         c.account_mut("S-1-5-21-2").plan.fps_cap = None;
         c.account_mut("S-1-5-21-2").max_clients = 1;
         c.account_mut("S-1-5-21-3").on = false;
@@ -206,14 +186,4 @@ mod tests {
         assert_eq!(Config::from_json("{}"), Config::default());
     }
 
-    #[test]
-    fn presets_are_recognised() {
-        let mut a = Preset::Alt.account();
-        assert_eq!(Preset::of(&a), Some(Preset::Alt));
-        a.max_clients = 1;
-        assert_eq!(Preset::of(&a), Some(Preset::Alt));
-        a.plan.fps_cap = Some(40);
-        assert_eq!(Preset::of(&a), None);
-        assert_eq!(Config::default().account("anyone"), Preset::Main.account());
-    }
 }

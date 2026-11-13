@@ -9,15 +9,11 @@ sessions**, so you can run more alts on the same PC.
 It never asks for your Roblox login, never injects into Roblox and never unlocks anything. It only changes
 Roblox's own settings files and does what Task Manager and Mem Reduct already do with memory.
 
-## One Setup Per Account
+## Settings Per Account
 
-Every Windows account on the PC (each RDP login is one) gets its own settings. Pick a starting point, then change anything:
-
-| | Graphics | FPS | CPU |
-| --- | --- | --- | --- |
-| **Main** | Lowest | 30 | Normal |
-| **Alt** | Lowest | 25 | Lower priority |
-| **Ultra Low** | Lowest, plus lowest textures, no grass, no anti-aliasing | 15 | Low priority and Efficiency Mode |
+Every Windows account on the PC (each RDP login is one) gets its own settings: lowest graphics, any FPS cap you
+type in, Ultra Low, open maximized, CPU priority, Efficiency Mode and how many clients to keep. Copy one account's
+settings to every account with one click.
 
 ## What It Does
 
@@ -32,6 +28,7 @@ Every Windows account on the PC (each RDP login is one) gets its own settings. P
 | **CPU Like Process Lasso** | Lower the clients' priority, give each client its own CPU cores, and turn on Windows 11 Efficiency Mode. None of it changes how the game looks. |
 | **Clean Memory** | Empties Windows' standby list when RAM gets full, like Mem Reduct. |
 | **Restart Clients** | Closes every client and opens each one again in the same server it was in (public or private), on a click or every few hours. |
+| **Lives In The Tray** | Closing the window keeps Potato working next to the clock. Open it or quit from the tray icon. |
 | **Updates Itself** | When a new version is on GitHub, one click downloads it, checks its SHA-256 and restarts into it. |
 | **Restore Originals** | Every file Potato changes gets a backup first. One click puts them all back. |
 
@@ -51,7 +48,8 @@ Needs Windows 10 or 11, x64.
 - **Settings:** each user's `AppData\Local\Roblox\GlobalBasicSettings_*.xml` (`SavedQualityLevel`,
   `GraphicsQualityLevel`, `FramerateCap`). Potato only edits values already in the file, and only while that
   user's Roblox is closed, since Roblox writes the file when it exits.
-- **Extra Cuts:** `ClientAppSettings.json` Fast Flags in each Roblox version folder, plus Bloxstrap's and Fishstrap's
+- **Ultra Low:** `ClientAppSettings.json` Fast Flags (lowest textures, render quality and detail, no grass or
+  anti-aliasing, lower resolution on scaled screens, a gray sky, paused lighting updates) in each Roblox version folder, plus Bloxstrap's and Fishstrap's
   `Modifications` folder. Only flags on Roblox's
   [allowlist](https://devforum.roblox.com/t/allowlist-for-local-client-configuration-via-fast-flags/3966569),
   so Roblox actually reads them. Your own flags stay.

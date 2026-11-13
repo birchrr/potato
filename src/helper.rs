@@ -81,7 +81,7 @@ pub fn run() {
     let mut m = Maximizer::default();
     let mut rejoined = 0;
     loop {
-        let config = std::fs::read_to_string(crate::app::config_path()).map(|t| crate::config::Config::from_json(&t)).unwrap_or_default();
+        let config = std::fs::read_to_string(crate::engine::config_path()).map(|t| crate::config::Config::from_json(&t)).unwrap_or_default();
         let a = config.account(&me);
         if a.on && a.plan.maximized {
             m.tick();
@@ -93,7 +93,7 @@ pub fn run() {
 
 /// The folder where the app leaves rejoin requests, one file per account (see rejoin.rs).
 pub fn rejoin_dir() -> PathBuf {
-    crate::app::config_path().with_file_name("rejoin")
+    crate::engine::config_path().with_file_name("rejoin")
 }
 
 /// If the app asked this account's clients to rejoin: wait for them to close, then open each join link, a few
@@ -129,7 +129,7 @@ pub fn running_here() -> bool {
 
 /// Where the helper copy lives: a folder every Windows user can read.
 fn helper_exe() -> PathBuf {
-    crate::app::config_path().with_file_name("Potato.exe")
+    crate::engine::config_path().with_file_name("Potato.exe")
 }
 
 /// Copy Potato next to its settings and register the logon task, then start it in every session that's
