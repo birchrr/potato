@@ -14,3 +14,4 @@ pub mod system;
 #[cfg(not(windows))]
 #[path = "system_demo.rs"]
 pub mod system;
+pub mod rejoin;

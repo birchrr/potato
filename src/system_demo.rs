@@ -53,6 +53,14 @@ pub fn profiles() -> Vec<Profile> {
     }).collect()
 }
 
+pub fn command_line(_: u32) -> Option<String> {
+    None
+}
+
+pub fn current_session() -> u32 {
+    1
+}
+
 pub fn console_session() -> u32 {
     1
 }
@@ -64,8 +72,6 @@ pub fn current_sid() -> String {
 pub fn close(_: u32) -> bool {
     true
 }
-
-pub fn open_url(_: &str) {}
 
 pub fn trim(_: u32) -> bool {
     true

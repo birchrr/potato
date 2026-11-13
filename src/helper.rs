@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM};
 use windows::Win32::System::Threading::{
-    CreateMutexW, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    CreateMutexW, OpenMutexW, OpenProcess, PROCESS_NAME_WIN32, SYNCHRONIZATION_SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SW_MAXIMIZE, ShowWindow,
@@ -79,14 +79,52 @@ pub fn run() {
     }
     let me = crate::system::current_sid();
     let mut m = Maximizer::default();
+    let mut rejoined = 0;
     loop {
         let config = std::fs::read_to_string(crate::app::config_path()).map(|t| crate::config::Config::from_json(&t)).unwrap_or_default();
         let a = config.account(&me);
         if a.on && a.plan.maximized {
             m.tick();
         }
+        serve_rejoins(&me, &mut rejoined);
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// The folder where the app leaves rejoin requests, one file per account (see rejoin.rs).
+pub fn rejoin_dir() -> PathBuf {
+    crate::app::config_path().with_file_name("rejoin")
+}
+
+/// If the app asked this account's clients to rejoin: wait for them to close, then open each join link, a few
+/// seconds apart so Roblox isn't starting two at once. `done` is the last request handled, so each runs once.
+pub fn serve_rejoins(me: &str, done: &mut u64) {
+    let Ok(text) = std::fs::read_to_string(rejoin_dir().join(format!("{me}.txt"))) else { return };
+    let Some((id, links)) = crate::rejoin::read_request(&text) else { return };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    if id == *done || now.saturating_sub(id) > 10 * 60 * 1000 {
+        return;   // already handled, or left over from long ago
+    }
+    *done = id;
+    let session = crate::system::current_session();
+    let start = Instant::now();
+    while crate::system::clients().iter().any(|c| c.session == session) && start.elapsed() < Duration::from_secs(30) {
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    for (i, link) in links.iter().enumerate() {
+        if i > 0 {
+            std::thread::sleep(Duration::from_secs(10));
+        }
+        crate::system::launch(link);
+    }
+}
+
+/// Whether a helper is already running in this session (it then handles this account's rejoins).
+pub fn running_here() -> bool {
+    unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, w!("Local\\PotatoHelper")) }.is_ok_and(|h| {
+        let _ = unsafe { CloseHandle(h) };
+        true
+    })
 }
 
 /// Where the helper copy lives: a folder every Windows user can read.

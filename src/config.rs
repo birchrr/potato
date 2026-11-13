@@ -92,11 +92,13 @@ pub struct Config {
     pub trim_minutes: u32,
     /// empty the standby list when RAM in use goes over this percent (0 = off)
     pub clean_above: u32,
+    /// restart every client into its server this often (0 = off)
+    pub restart_hours: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { accounts: BTreeMap::new(), cores_per_client: 0, trim_minutes: 5, clean_above: 0 }
+        Config { accounts: BTreeMap::new(), cores_per_client: 0, trim_minutes: 5, clean_above: 0, restart_hours: 0 }
     }
 }
 
@@ -116,6 +118,7 @@ impl Config {
         }))).collect();
         serde_json::to_string_pretty(&json!({
             "accounts": accounts, "coresPerClient": self.cores_per_client, "trimMinutes": self.trim_minutes, "cleanAbove": self.clean_above,
+            "restartHours": self.restart_hours,
         }))
         .unwrap()
     }
@@ -146,6 +149,7 @@ impl Config {
             cores_per_client: num(&v["coresPerClient"], d.cores_per_client),
             trim_minutes: num(&v["trimMinutes"], d.trim_minutes),
             clean_above: num(&v["cleanAbove"], d.clean_above),
+            restart_hours: num(&v["restartHours"], d.restart_hours),
         }
     }
 }
@@ -188,7 +192,7 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let mut c = Config { cores_per_client: 2, trim_minutes: 0, clean_above: 85, ..Config::default() };
+        let mut c = Config { cores_per_client: 2, trim_minutes: 0, clean_above: 85, restart_hours: 6, ..Config::default() };
         c.accounts.insert("S-1-5-21-1".into(), Preset::UltraLow.account());
         c.account_mut("S-1-5-21-2").plan.fps_cap = None;
         c.account_mut("S-1-5-21-2").max_clients = 1;

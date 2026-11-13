@@ -119,6 +119,24 @@ pub fn apply(local: &Path, plan: &Plan) -> io::Result<usize> {
     Ok(todo.len())
 }
 
+/// Windows file time (100 ns steps since 1601) for a moment.
+fn file_time(t: std::time::SystemTime) -> u64 {
+    t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64 / 100 + 116_444_736_000_000_000)
+}
+
+/// The log of the client that started at `started` (a Windows file time): Roblox opens a new
+/// `logs\*Player*.log` as each client starts, so it's the one created closest after the start.
+pub fn client_log(local: &Path, started: u64) -> Option<String> {
+    let logs = fs::read_dir(local.join("Roblox").join("logs")).ok()?;
+    let slack = 60 * 10_000_000;   // a minute either way
+    let best = logs.flatten()
+        .filter(|e| e.file_name().to_string_lossy().contains("Player"))
+        .filter_map(|e| Some((file_time(e.metadata().ok()?.created().ok()?), e.path())))
+        .filter(|(t, _)| *t + slack >= started)
+        .min_by_key(|(t, _)| t.abs_diff(started))?;
+    Some(String::from_utf8_lossy(&fs::read(best.1).ok()?).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,3 +16,13 @@ pub fn install() -> bool {
 }
 
 pub fn uninstall() {}
+
+pub fn rejoin_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("potato-demo-rejoin")
+}
+
+pub fn serve_rejoins(_: &str, _: &mut u64) {}
+
+pub fn running_here() -> bool {
+    true
+}

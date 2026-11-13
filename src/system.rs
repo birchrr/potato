@@ -176,12 +176,6 @@ pub fn current_sid() -> String {
     unsafe { owner(GetCurrentProcess()) }.map(|(sid, _)| sid).unwrap_or_default()
 }
 
-/// Open a link in the default browser.
-pub fn open_url(url: &str) {
-    let url: Vec<u16> = url.encode_utf16().chain([0]).collect();
-    unsafe { ShellExecuteW(None, w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL) };
-}
-
 /// Move a client's memory out to the page file, like Mem Reduct does. Roblox pulls back what it uses.
 pub fn trim(pid: u32) -> bool {
     unsafe {
@@ -232,6 +226,44 @@ pub fn set_cpu(pid: u32, cpu: &Cpu) -> bool {
 #[link(name = "ntdll")]
 unsafe extern "system" {
     fn NtSetSystemInformation(class: i32, info: *const c_void, len: u32) -> i32;
+    fn NtQueryInformationProcess(process: HANDLE, class: i32, info: *mut c_void, len: u32, written: *mut u32) -> i32;
+}
+
+/// The command line a client was started with (the same text Task Manager shows), to find a private server.
+pub fn command_line(pid: u32) -> Option<String> {
+    const PROCESS_COMMAND_LINE_INFORMATION: i32 = 60;
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        _max: u16,
+        buffer: *const u16,
+    }
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut len = 0u32;
+        let _ = NtQueryInformationProcess(h, PROCESS_COMMAND_LINE_INFORMATION, std::ptr::null_mut(), 0, &mut len);
+        let mut buf = vec![0u64; (len as usize).div_ceil(8).max(2)];   // u64s keep the pointer inside aligned
+        let ok = len > 0 && NtQueryInformationProcess(h, PROCESS_COMMAND_LINE_INFORMATION, buf.as_mut_ptr() as *mut c_void, len, &mut len) >= 0;
+        let _ = CloseHandle(h);
+        if !ok {
+            return None;
+        }
+        let s = &*(buf.as_ptr() as *const UnicodeString);
+        Some(String::from_utf16_lossy(std::slice::from_raw_parts(s.buffer, s.length as usize / 2)))
+    }
+}
+
+/// Open a Roblox join link in this session, as this user.
+pub fn launch(link: &str) -> bool {
+    let link: Vec<u16> = link.encode_utf16().chain([0]).collect();
+    unsafe { ShellExecuteW(None, w!("open"), PCWSTR(link.as_ptr()), None, None, SW_SHOWNORMAL) }.0 as usize > 32
+}
+
+/// The login session this copy of Potato runs in.
+pub fn current_session() -> u32 {
+    let mut s = 0;
+    let _ = unsafe { ProcessIdToSessionId(std::process::id(), &mut s) };
+    s
 }
 
 /// Empty Windows' standby list (cached memory nothing uses right now). Needs admin.

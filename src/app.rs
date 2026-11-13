@@ -9,12 +9,14 @@ use eframe::egui::{self, Color32, CornerRadius, FontFamily, Frame, Margin, RichT
 use crate::config::{self, Account, Config, Preset, Priority};
 use crate::files;
 use crate::tweaks::core_masks;
+use crate::version::Release;
+use crate::rejoin;
 
 use crate::helper::{self, Maximizer};
 use crate::system::{self, Client, Cpu, Profile};
 
 const TICK: Duration = Duration::from_secs(2);
-const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
+const UPDATE_EVERY: Duration = Duration::from_secs(10 * 60);   // GitHub allows 60 unsigned-in checks an hour per PC
 #[cfg(windows)]
 const RELEASES: &str = "https://api.github.com/repos/birchrr/potato/releases/latest";
 
@@ -57,8 +59,18 @@ enum State {
     Failed,
 }
 
-/// A newer release on GitHub: (tag, page).
-type Update = Arc<Mutex<Option<(String, String)>>>;
+/// Where a newer release stands. Shared with the threads that check for it and install it.
+#[derive(Clone, Default)]
+#[cfg_attr(not(windows), allow(dead_code))]   // only Windows checks for updates
+enum UpdateState {
+    #[default]
+    None,
+    Available(Release),
+    Installing(String),
+    Failed(String),
+}
+
+type Update = Arc<Mutex<UpdateState>>;
 
 pub struct App {
     config: Config,
@@ -80,6 +92,9 @@ pub struct App {
     last_tick: Option<Instant>,
     last_trim: Instant,
     last_clean: Instant,
+    last_restart: Instant,
+    /// Restart All Clients was clicked once and asks for a second click until then
+    confirm_restart: Option<Instant>,
     note: String,
 }
 
@@ -88,9 +103,20 @@ impl App {
         style(ctx);
         let config = std::fs::read_to_string(config_path()).map(|t| Config::from_json(&t)).unwrap_or_default();
         let profiles = system::profiles();
+        let me = system::current_sid();
+        let mine = me.clone();
+        std::thread::spawn(move || {
+            let mut done = 0;
+            loop {
+                if !helper::running_here() {
+                    helper::serve_rejoins(&mine, &mut done);   // a helper in this login would do it instead
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
         App {
             config,
-            me: system::current_sid(),
+            me,
             clients: Vec::new(),
             selected: profiles.first().map(|p| p.sid.clone()),
             profiles,
@@ -107,6 +133,8 @@ impl App {
             last_tick: None,
             last_trim: Instant::now(),
             last_clean: Instant::now(),
+            last_restart: Instant::now(),
+            confirm_restart: None,
             note: String::new(),
         }
     }
@@ -153,6 +181,10 @@ impl App {
         self.close_extras();
         self.apply_cpu();
         self.keep_maximized();
+        let hours = self.config.restart_hours;
+        if hours > 0 && self.last_restart.elapsed() >= Duration::from_secs(hours as u64 * 3600) {
+            self.restart_clients();
+        }
         let minutes = self.config.trim_minutes;
         if minutes > 0 && self.last_trim.elapsed() >= Duration::from_secs(minutes as u64 * 60) {
             self.trim_all(false);
@@ -237,6 +269,38 @@ impl App {
         }
     }
 
+    /// Close every client and reopen each in the server it was in. The reopening happens in each account's
+    /// own login (helper.rs); clients whose server can't be read are left running.
+    fn restart_clients(&mut self) {
+        self.last_restart = Instant::now();
+        let mut servers: HashMap<&str, Vec<rejoin::Server>> = HashMap::new();
+        let (mut close, mut unknown) = (Vec::new(), 0);
+        for c in &self.clients {
+            let log = self.profiles.iter().find(|p| p.sid == c.sid).and_then(|p| files::client_log(&p.local, c.started));
+            match rejoin::server(system::command_line(c.pid).as_deref(), log.as_deref()) {
+                Some(s) if !c.sid.is_empty() => {
+                    servers.entry(c.sid.as_str()).or_default().push(s);
+                    close.push(c.pid);
+                }
+                _ => unknown += 1,
+            }
+        }
+        let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let dir = helper::rejoin_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let mut written = Vec::new();
+        for (sid, list) in &servers {
+            if std::fs::write(dir.join(format!("{sid}.txt")), rejoin::request(id, list)).is_ok() {
+                written.push(*sid);
+            }
+        }
+        let closed = self.clients.iter().filter(|c| written.contains(&c.sid.as_str()) && close.contains(&c.pid))
+            .filter(|c| system::close(c.pid)).count();
+        self.note = format!("Restarting {closed} {}{}", if closed == 1 { "Client" } else { "Clients" },
+            if unknown > 0 { format!(". Couldn't Find The Server For {unknown}, Left Those Open") } else { String::new() });
+        self.last_tick = None;
+    }
+
     fn restore(&mut self) {
         let mut n = 0;
         for p in &self.profiles {
@@ -249,21 +313,60 @@ impl App {
     }
 }
 
-/// Ask GitHub for the latest release in the background; curl ships with Windows 10 and 11.
 #[cfg(not(windows))]
 fn check_for_update(_: Update) {}
 
+#[cfg(not(windows))]
+fn install_update(_: Release, _: Update) {}
+
+/// GET a URL with curl (it ships with Windows 10 and 11), following GitHub's download redirects.
+#[cfg(windows)]
+fn fetch(url: &str, seconds: u32) -> Option<Vec<u8>> {
+    use std::os::windows::process::CommandExt;
+    let out = std::process::Command::new("curl").args(["-sfL", "-m", &seconds.to_string(), "-H", "User-Agent: Potato", url])
+        .creation_flags(0x0800_0000).output().ok()?;
+    out.status.success().then_some(out.stdout)
+}
+
+/// Ask GitHub for the latest release in the background.
 #[cfg(windows)]
 fn check_for_update(update: Update) {
-    use std::os::windows::process::CommandExt;
     std::thread::spawn(move || {
-        let Ok(out) = std::process::Command::new("curl").args(["-s", "-m", "15", "-H", "User-Agent: Potato", RELEASES])
-            .creation_flags(0x0800_0000).output() else { return };
-        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return };
-        if let (Some(tag), Some(url)) = (v["tag_name"].as_str(), v["html_url"].as_str())
-            && crate::version::is_newer(tag, env!("CARGO_PKG_VERSION")) {
-            *update.lock().unwrap() = Some((tag.to_string(), url.to_string()));
+        let Some(body) = fetch(RELEASES, 15) else { return };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) else { return };
+        let mut state = update.lock().unwrap();
+        if let (UpdateState::None, Some(r)) = (&*state, crate::version::newer_release(&v, env!("CARGO_PKG_VERSION"))) {
+            *state = UpdateState::Available(r);
         }
+    });
+}
+
+/// Download the new Potato.exe, check it against the release's SHA-256, put it in place of this one and
+/// restart into it. Windows lets a running exe be renamed but not overwritten, so this one becomes
+/// Potato.old (deleted on the next start).
+#[cfg(windows)]
+fn install_update(r: Release, update: Update) {
+    *update.lock().unwrap() = UpdateState::Installing(r.tag.clone());
+    std::thread::spawn(move || {
+        let fail = |msg: &str| *update.lock().unwrap() = UpdateState::Failed(msg.to_string());
+        let (Some(exe), Some(sums)) = (fetch(&r.exe_url, 300), fetch(&r.sums_url, 30)) else { return fail("Couldn't download the update") };
+        if !crate::version::matches_checksum(&exe, &String::from_utf8_lossy(&sums)) {
+            return fail("The download didn't match its checksum, so it wasn't installed");
+        }
+        let Ok(me) = std::env::current_exe() else { return fail("Couldn't find Potato.exe") };
+        let old = me.with_extension("old");
+        let _ = std::fs::remove_file(&old);
+        if std::fs::rename(&me, &old).is_err() {
+            return fail("Couldn't replace Potato.exe");
+        }
+        if std::fs::write(&me, &exe).is_err() {
+            let _ = std::fs::rename(&old, &me);   // put the working one back
+            return fail("Couldn't replace Potato.exe");
+        }
+        if std::process::Command::new(&me).spawn().is_ok() {
+            std::process::exit(0);
+        }
+        fail("Updated. Close Potato and open it again.");
     });
 }
 
@@ -278,13 +381,13 @@ impl eframe::App for App {
             ui.add_space(14.0);
             self.stats(ui);
             ui.add_space(14.0);
-            let h = (ui.available_height() - 34.0).max(300.0);
+            let h = (ui.available_height() - 44.0).max(300.0);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;   // the gap between the columns; each column puts 8 back
                 let right = 350.0;
                 let left = ui.available_width() - right - 14.0;
                 let down = egui::Layout::top_down(egui::Align::Min);
-                let pc = 104.0;
+                let pc = 120.0;
                 ui.allocate_ui_with_layout(egui::vec2(left, h), down, |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     self.accounts(ui, h - pc - 14.0);
@@ -315,21 +418,36 @@ impl eframe::App for App {
 
 impl App {
     fn banner(&mut self, ui: &mut Ui) {
-        let update = self.update.lock().unwrap().clone();
-        let Some((tag, url)) = update.filter(|_| !self.update_dismissed) else { return };
+        let state = self.update.lock().unwrap().clone();
+        let (title, note) = match &state {
+            UpdateState::None => return,
+            UpdateState::Available(_) if self.update_dismissed => return,
+            UpdateState::Available(r) => (format!("Potato {} Is Out", r.tag), "Updates in a few seconds and restarts by itself.".to_string()),
+            UpdateState::Installing(tag) => (format!("Installing Potato {tag}"), "Downloading and checking it. Potato restarts when it's done.".to_string()),
+            UpdateState::Failed(msg) => ("Update Didn't Install".to_string(), msg.clone()),
+        };
         Frame::new().fill(ACCENT.gamma_multiply(0.14)).stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.5)))
             .corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(14, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(semi(&format!("Potato {tag} Is Out"), 13.5).color(TEXT));
-                ui.label(RichText::new("Download the new version from GitHub.").color(DIM));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(egui::Button::new(RichText::new("Later").color(DIM)).frame(false)).clicked() {
-                        self.update_dismissed = true;
+                ui.label(semi(&title, 13.5).color(TEXT));
+                ui.label(RichText::new(note).color(DIM));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match state {
+                    UpdateState::Available(r) => {
+                        if ui.add(egui::Button::new(RichText::new("Later").color(DIM)).frame(false)).clicked() {
+                            self.update_dismissed = true;
+                        }
+                        if primary(ui, "Update Now").clicked() {
+                            install_update(r, self.update.clone());
+                        }
                     }
-                    if primary(ui, "Download").clicked() {
-                        system::open_url(&url);
+                    UpdateState::Installing(_) => { ui.spinner(); }
+                    UpdateState::Failed(_) => {
+                        if ui.add(egui::Button::new(RichText::new("Close").color(DIM)).frame(false)).clicked() {
+                            *self.update.lock().unwrap() = UpdateState::None;
+                        }
                     }
+                    UpdateState::None => {}
                 });
             });
         });
@@ -346,6 +464,20 @@ impl App {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if primary(ui, "Trim All Roblox").clicked() {
                     self.trim_all(true);
+                }
+                let armed = self.confirm_restart.is_some_and(|t| t.elapsed() < Duration::from_secs(4));
+                let label = if armed { "Click Again To Restart" } else { "Restart All Clients" };
+                if ui.add(egui::Button::new(label).min_size(egui::vec2(0.0, 32.0)))
+                    .on_hover_text("Closes every Roblox client and opens each one again in the same server").clicked() {
+                    if armed {
+                        self.confirm_restart = None;
+                        self.restart_clients();
+                    } else {
+                        self.confirm_restart = Some(Instant::now());
+                    }
+                }
+                if armed {
+                    ui.ctx().request_repaint_after(Duration::from_millis(250));
                 }
                 if ui.add(egui::Button::new("Clean Memory").min_size(egui::vec2(0.0, 32.0))).clicked() {
                     self.clean(true);
@@ -447,24 +579,30 @@ impl App {
                 section(ui, "Game");
                 setting(ui, "Lowest Graphics", "", |ui, id| { toggle(ui, &mut a.plan.lowest_graphics).labelled_by(id); });
                 setting(ui, "Open Maximized", "Fills the screen, keeps the title bar", |ui, id| { toggle(ui, &mut a.plan.maximized).labelled_by(id); });
+                const CUSTOM: Option<u32> = Some(0);
+                let presets = [None, Some(15), Some(20), Some(25), Some(30), Some(40), Some(60), Some(120)];
+                let custom = !presets.contains(&a.plan.fps_cap);
                 setting(ui, "FPS Cap", "", |ui, id| {
-                    let options = [(None, "Off"), (Some(15), "15"), (Some(25), "25"), (Some(30), "30"), (Some(60), "60")];
-                    let mut fps = a.plan.fps_cap;
-                    if segmented(ui, &mut fps, &options) {
-                        a.plan.fps_cap = fps;
-                    }
-                    if let Some(f) = a.plan.fps_cap.as_mut().filter(|f| !options.iter().any(|(v, _)| *v == Some(**f))) {
-                        ui.add(egui::DragValue::new(f).range(5..=240)).labelled_by(id);
+                    let mut options: Vec<(Option<u32>, String)> = presets.iter().map(|f| (*f, f.map_or("Off".into(), |f| format!("{f} FPS")))).collect();
+                    options.push((CUSTOM, "Custom".into()));
+                    let mut pick = if custom { CUSTOM } else { a.plan.fps_cap };
+                    if dropdown(ui, "fps", id, &mut pick, &options) {
+                        a.plan.fps_cap = if pick == CUSTOM { Some(45) } else { pick };
                     }
                 });
+                if let Some(f) = a.plan.fps_cap.as_mut().filter(|_| custom) {
+                    setting(ui, "Custom FPS", "", |ui, id| {
+                        ui.add(egui::Slider::new(f, 5..=240).suffix(" FPS")).labelled_by(id);
+                    });
+                }
                 setting(ui, "Ultra Low", "Lowest textures, no grass, no anti-aliasing", |ui, id| { toggle(ui, &mut a.plan.ultra_low).labelled_by(id); });
                 section(ui, "CPU");
                 setting(ui, "Priority", "", |ui, _| { segmented(ui, &mut a.priority, &Priority::ALL.map(|p| (p, p.label()))); });
                 setting(ui, "Efficiency Mode", "Windows 11 runs it on less power", |ui, id| { toggle(ui, &mut a.efficiency).labelled_by(id); });
                 section(ui, "Clients");
-                setting(ui, "Close Extra Clients", "Keeps the newest, closes older stuck ones", |ui, id| {
-                    ui.add(egui::DragValue::new(&mut a.max_clients).range(0..=20)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("Keep {n}") })).labelled_by(id);
+                setting(ui, "Close Extra Clients", "Closes older stuck ones", |ui, id| {
+                    let options: Vec<(u32, String)> = [0, 1, 2, 3, 5].iter().map(|n| (*n, if *n == 0 { "Off".into() } else { format!("Keep {n}") })).collect();
+                    dropdown(ui, "extras", id, &mut a.max_clients, &options);
                 });
                 ui.add_space(6.0);
                 if sids.len() > 1 && ui.button("Use These For Every Account").clicked() {
@@ -479,24 +617,21 @@ impl App {
         });
     }
 
-    /// Settings that are the same for every account, in three columns under the accounts table.
+    /// Settings that are the same for every account, side by side under the accounts table.
     fn whole_pc(&mut self, ui: &mut Ui, h: f32) {
-        let cores = self.cores;
+        let cores = self.cores as u32;
         let c = &mut self.config;
+        let off_or = |n: u32, f: &dyn Fn(u32) -> String| if n == 0 { "Off".to_string() } else { f(n) };
         card(ui, h, "Whole PC", "The same for every account", |ui| {
-            ui.columns(3, |cols| {
-                setting(&mut cols[0], "Own Cores Per Client", &format!("{cores} cores on this PC"), |ui, id| {
-                    ui.add(egui::DragValue::new(&mut c.cores_per_client).range(0..=cores as u32)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n}") })).labelled_by(id);
-                });
-                setting(&mut cols[1], "Trim Roblox Every", "Frees unused RAM", |ui, id| {
-                    ui.add(egui::DragValue::new(&mut c.trim_minutes).range(0..=120)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n} min") })).labelled_by(id);
-                });
-                setting(&mut cols[2], "Clean RAM Above", "Empties standby RAM", |ui, id| {
-                    ui.add(egui::DragValue::new(&mut c.clean_above).range(0..=98)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n}%") })).labelled_by(id);
-                });
+            ui.columns(4, |cols| {
+                let list = [0, 1, 2, 3, 4, 6, 8].into_iter().filter(|n| *n <= cores).map(|n| (n, off_or(n, &|n| format!("{n} Each")))).collect::<Vec<_>>();
+                stacked(&mut cols[0], "Own CPU Cores", &format!("{cores} on this PC"), |ui, id| { dropdown(ui, "cores", id, &mut c.cores_per_client, &list); });
+                let list = [0, 1, 2, 5, 10, 15, 30].map(|n| (n, off_or(n, &|n| format!("Every {n} Min"))));
+                stacked(&mut cols[1], "Trim RAM", "Frees unused memory", |ui, id| { dropdown(ui, "trim", id, &mut c.trim_minutes, &list); });
+                let list = [0, 70, 75, 80, 85, 90].map(|n| (n, off_or(n, &|n| format!("Above {n}%"))));
+                stacked(&mut cols[2], "Clean Memory", "When the PC is this full", |ui, id| { dropdown(ui, "clean", id, &mut c.clean_above, &list); });
+                let list = [0, 1, 2, 4, 6, 12, 24].map(|n| (n, off_or(n, &|n| format!("Every {n} {}", if n == 1 { "Hour" } else { "Hours" }))));
+                stacked(&mut cols[3], "Restart Clients", "Same server, fresh client", |ui, id| { dropdown(ui, "restart", id, &mut c.restart_hours, &list); });
             });
         });
     }
@@ -625,6 +760,27 @@ fn toggle(ui: &mut Ui, on: &mut bool) -> egui::Response {
     let x = egui::lerp((rect.left() + r)..=(rect.right() - r), t);
     ui.painter().circle_filled(egui::pos2(x, rect.center().y), r - 2.5, if *on { ON_ACCENT } else { DIM });
     resp
+}
+
+/// A label with a note under it, then its control: for narrow columns.
+fn stacked(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui, egui::Id)) {
+    let id = ui.label(RichText::new(label).size(13.5).color(TEXT)).id;
+    ui.label(RichText::new(note).size(11.5).color(FAINT));
+    ui.add_space(2.0);
+    control(ui, id);
+}
+
+/// A dropdown of fixed choices. Returns true when the choice changed.
+fn dropdown<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, label: egui::Id, value: &mut T, options: &[(T, String)]) -> bool {
+    let shown = options.iter().find(|(v, _)| v == value).map_or("Custom", |(_, l)| l.as_str()).to_string();
+    let mut changed = false;
+    let r = egui::ComboBox::from_id_salt(salt).selected_text(shown).width(124.0).show_ui(ui, |ui| {
+        for (v, l) in options {
+            changed |= ui.selectable_value(value, *v, l).changed();
+        }
+    });
+    r.response.labelled_by(label);
+    changed
 }
 
 /// Buttons side by side, the chosen one filled. Returns true when the choice changed.

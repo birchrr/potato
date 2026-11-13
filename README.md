@@ -31,7 +31,8 @@ Every Windows account on the PC (each RDP login is one) gets its own settings. P
 | **Trim RAM** | Moves memory Roblox isn't using right now to the page file, every few minutes or on a click. |
 | **CPU Like Process Lasso** | Lower the clients' priority, give each client its own CPU cores, and turn on Windows 11 Efficiency Mode. None of it changes how the game looks. |
 | **Clean Memory** | Empties Windows' standby list when RAM gets full, like Mem Reduct. |
-| **Update Banner** | Tells you when a new version is on GitHub. |
+| **Restart Clients** | Closes every client and opens each one again in the same server it was in (public or private), on a click or every few hours. |
+| **Updates Itself** | When a new version is on GitHub, one click downloads it, checks its SHA-256 and restarts into it. |
 | **Restore Originals** | Every file Potato changes gets a backup first. One click puts them all back. |
 
 ## Install
@@ -54,6 +55,10 @@ Needs Windows 10 or 11, x64.
   `Modifications` folder. Only flags on Roblox's
   [allowlist](https://devforum.roblox.com/t/allowlist-for-local-client-configuration-via-fast-flags/3966569),
   so Roblox actually reads them. Your own flags stay.
+- **Restart Clients:** a public server comes from the client's own Roblox log (its last `Joining game` line, so teleports
+  are followed), a private server from the link code in the command line it was started with. Each account's helper
+  then opens Roblox's own join link (`roblox://experiences/start?...`) in that login. The login ticket in the command
+  line is never read out or stored.
 - **Open Maximized:** turns Roblox's own Fullscreen setting off (that one hides the title bar), then maximizes each new Roblox
   window. Windows only lets a program move windows in its own login, so Potato copies itself to `C:\ProgramData\Potato` and adds a
   hidden logon task that runs `Potato.exe --helper` in every login.
