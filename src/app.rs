@@ -242,15 +242,16 @@ impl App {
                 return;
             }
             ui.add_space(6.0);
+            let console = system::console_session();
             let mut trim = None;
             egui::Grid::new("clients").num_columns(4).spacing([18.0, 6.0]).striped(false).show(ui, |ui| {
-                for h in ["User", "Session", "RAM", ""] {
+                for h in ["User", "Where", "RAM", ""] {
                     ui.label(RichText::new(h).small().color(DIM));
                 }
                 ui.end_row();
                 for c in &self.clients {
                     ui.label(if c.user.is_empty() { "Unknown (Needs Admin)" } else { &c.user });
-                    ui.label(c.session.to_string());
+                    ui.label(if c.session == console { "This PC" } else { "RDP" });
                     ui.label(gb(c.ram));
                     if ui.small_button("Trim").clicked() {
                         trim = Some(c.pid);

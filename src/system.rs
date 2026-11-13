@@ -18,7 +18,7 @@ use windows::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW, RegGetValueW,
     RegOpenKeyExW,
 };
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
     BELOW_NORMAL_PRIORITY_CLASS, GetActiveProcessorCount, GetCurrentProcess, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
@@ -147,6 +147,11 @@ unsafe fn owner(process: HANDLE) -> Option<(String, String)> {
     .map(|_| String::from_utf16_lossy(&name[..nl as usize]))
     .unwrap_or_default();
     Some((sid_text, user))
+}
+
+/// The Windows login session at the PC's own screen; every other session is someone connected over RDP.
+pub fn console_session() -> u32 {
+    unsafe { WTSGetActiveConsoleSessionId() }
 }
 
 /// Move a client's memory out to the page file, like Mem Reduct does. Roblox pulls back what it uses.
