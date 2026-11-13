@@ -220,12 +220,12 @@ impl App {
                 ui.label(semi(&title, 28.0).color(TEXT));
                 ui.label(RichText::new(crumb).size(13.0).color(FAINT));
             });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                if primary(ui, "Trim All Roblox").clicked() {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if action(ui, "Trim All Roblox").on_hover_text("Frees memory every Roblox client isn't using right now").clicked() {
                     e.trim_all(true);
                 }
                 let armed = self.confirm_restart.is_some_and(|t| t.elapsed() < Duration::from_secs(4));
-                if ui.add(egui::Button::new(if armed { "Click Again To Restart" } else { "Restart All" }).min_size(egui::vec2(0.0, 34.0)))
+                if action(ui, if armed { "Click Again To Restart" } else { "Restart All" })
                     .on_hover_text("Closes every Roblox client and opens each one again in the same server").clicked() {
                     if armed {
                         self.confirm_restart = None;
@@ -237,7 +237,7 @@ impl App {
                 if armed {
                     ui.ctx().request_repaint_after(Duration::from_millis(250));
                 }
-                if ui.add(egui::Button::new("Clean Memory").min_size(egui::vec2(0.0, 34.0))).clicked() {
+                if action(ui, "Clean Memory").on_hover_text("Empties Windows' standby memory").clicked() {
                     e.clean(true);
                 }
             });
@@ -270,9 +270,13 @@ impl App {
                 row(ui, "Priority", "Lower keeps your PC smooth while Roblox runs", false, |ui, id| {
                     dropdown(ui, "priority", id, &mut a.priority, &Priority::ALL.map(|p| (p, p.label().to_string())));
                 });
-                row(ui, "Efficiency Mode", "Windows 11 runs it on less power", false, |ui, id| { toggle(ui, &mut a.efficiency).labelled_by(id); });
-                let options: Vec<(u32, String)> = [0, 1, 2, 3, 5].iter().map(|n| (*n, if *n == 0 { "Off".into() } else { format!("Keep {n}") })).collect();
-                row(ui, "Close Extra Clients", "Keeps the newest, closes older stuck ones", true, |ui, id| { dropdown(ui, "extras", id, &mut a.max_clients, &options); });
+                row(ui, "Efficiency Mode", "Windows 11 runs it slower to save CPU and heat. Can lower FPS: best for alts", false, |ui, id| { toggle(ui, &mut a.efficiency).labelled_by(id); });
+                row(ui, "One Client Only", "If a second Roblox opens on this account, the older one closes", true, |ui, id| {
+                    let mut one = a.max_clients > 0;
+                    if toggle(ui, &mut one).labelled_by(id).changed() {
+                        a.max_clients = one as u32;
+                    }
+                });
             });
         });
         ui.add_space(16.0);
@@ -435,6 +439,11 @@ fn dropdown<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, label: egui::Id, value
 
 fn primary(ui: &mut Ui, text: &str) -> egui::Response {
     ui.add(egui::Button::new(semi(text, 13.5).color(NAV)).fill(TEXT).stroke(Stroke::NONE).min_size(egui::vec2(0.0, 34.0)))
+}
+
+/// The page header's buttons: one size and style, so they line up.
+fn action(ui: &mut Ui, text: &str) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(text).size(13.5)).min_size(egui::vec2(120.0, 36.0)))
 }
 
 fn style(ctx: &egui::Context) {

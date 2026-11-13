@@ -23,7 +23,7 @@ settings to every account with one click.
 | **Lowest Graphics And FPS Cap** | Uses Roblox's own Graphics Quality and Maximum Frame Rate settings, for every Windows user you tick. |
 | **Keeps Them Applied** | Roblox rewrites its settings when it closes. Potato puts yours back the moment it does, before anything relaunches it. Roblox updates are covered too. |
 | **Open Maximized** | Every Roblox window opens filling the screen, title bar kept, in every RDP login. You can still resize it after. |
-| **Close Extra Clients** | Keeps only the newest Roblox window(s) per account and closes older stuck ones, like the pile left after an internet outage. |
+| **One Client Only** | If a second Roblox opens on an account, the older one closes, like the pile left after an internet outage. |
 | **Trim RAM** | Moves memory Roblox isn't using right now to the page file, every few minutes or on a click. |
 | **CPU Like Process Lasso** | Lower the clients' priority, give each client its own CPU cores, and turn on Windows 11 Efficiency Mode. None of it changes how the game looks. |
 | **Clean Memory** | Empties Windows' standby list when RAM gets full, like Mem Reduct. |
