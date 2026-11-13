@@ -13,6 +13,39 @@ pub struct Config {
     pub trim_minutes: u32,
     /// empty the standby list when RAM in use goes over this percent (0 = off)
     pub clean_above: u32,
+    pub priority: Priority,
+    /// logical cores each client gets to itself (0 = off: Windows decides)
+    pub cores_per_client: u32,
+    /// Windows 11 Efficiency Mode for every client
+    pub efficiency: bool,
+}
+
+/// CPU priority for Roblox clients. Off leaves whatever Windows or the user set.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Priority {
+    Off,
+    BelowNormal,
+    Idle,
+}
+
+impl Priority {
+    pub const ALL: [Priority; 3] = [Priority::Off, Priority::BelowNormal, Priority::Idle];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Priority::Off => "Don't Change",
+            Priority::BelowNormal => "Below Normal",
+            Priority::Idle => "Low",
+        }
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Priority::Off => "off",
+            Priority::BelowNormal => "belowNormal",
+            Priority::Idle => "idle",
+        }
+    }
 }
 
 impl Default for Config {
@@ -22,6 +55,9 @@ impl Default for Config {
             users: Vec::new(),
             trim_minutes: 5,
             clean_above: 0,
+            priority: Priority::Off,
+            cores_per_client: 0,
+            efficiency: false,
         }
     }
 }
@@ -31,7 +67,8 @@ impl Config {
         serde_json::to_string_pretty(&json!({
             "lowestGraphics": self.plan.lowest_graphics, "fpsCap": self.plan.fps_cap, "extras": self.plan.extras,
             "macroSafe": self.plan.macro_safe, "users": self.users, "trimMinutes": self.trim_minutes,
-            "cleanAbove": self.clean_above,
+            "cleanAbove": self.clean_above, "priority": self.priority.key(), "coresPerClient": self.cores_per_client,
+            "efficiency": self.efficiency,
         }))
         .unwrap()
     }
@@ -52,6 +89,9 @@ impl Config {
             users: v["users"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect()).unwrap_or_default(),
             trim_minutes: num("trimMinutes", d.trim_minutes),
             clean_above: num("cleanAbove", d.clean_above),
+            priority: Priority::ALL.into_iter().find(|p| v["priority"].as_str() == Some(p.key())).unwrap_or(d.priority),
+            cores_per_client: num("coresPerClient", d.cores_per_client),
+            efficiency: flag("efficiency", d.efficiency),
         }
     }
 }
@@ -62,7 +102,8 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        let c = Config { plan: Plan { fps_cap: None, ..Config::default().plan }, users: vec!["S-1-5-21-1".into()], trim_minutes: 2, clean_above: 85 };
+        let c = Config { plan: Plan { fps_cap: None, ..Config::default().plan }, users: vec!["S-1-5-21-1".into()], trim_minutes: 2,
+                         clean_above: 85, priority: Priority::Idle, cores_per_client: 2, efficiency: true };
         assert_eq!(Config::from_json(&c.to_json()), c);
         let c = Config { trim_minutes: 0, ..Config::default() };
         assert_eq!(Config::from_json(&c.to_json()), c);

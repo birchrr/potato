@@ -1,6 +1,6 @@
 # Potato
 
-Make Roblox run on a potato. One small Windows app that puts **every Roblox client on your PC** on low:
+Run more Roblox on one PC. One small Windows app that puts **every Roblox client on your PC** on low:
 lowest graphics, a frame rate cap and trimmed RAM. That includes clients running in other Windows users' **RDP
 sessions**, so you can run more alts on the same PC.
 
@@ -26,6 +26,7 @@ Turn Macro Safe off to also get **Extra Cuts**: lowest textures, no grass, no an
 | **Lowest Graphics And FPS Cap** | Uses Roblox's own Graphics Quality and Maximum Frame Rate settings, for every Windows user you tick. |
 | **Keeps Them Applied** | Roblox rewrites its settings when it closes. Potato puts yours back the moment it does, before a macro relaunches it. Roblox updates are covered too. |
 | **Trim RAM** | Moves memory Roblox isn't using right now to the page file, every few minutes or on a click. |
+| **CPU Like Process Lasso** | Lower the clients' priority, give each client its own CPU cores, and turn on Windows 11 Efficiency Mode. None of it changes how the game looks. |
 | **Clean Memory** | Empties Windows' standby list when RAM gets full, like Mem Reduct. |
 | **Restore Originals** | Every file Potato changes gets a backup first. One click puts them all back. |
 
@@ -51,6 +52,8 @@ Needs Windows 10 or 11, x64.
   so Roblox actually reads them. Your own flags stay.
 - **Users:** every Windows account with Roblox installed, from the registry's profile list. Clients are matched
   to their account by the user they run as.
+- **CPU:** `SetPriorityClass`, `SetProcessAffinityMask` and power throttling (Efficiency Mode) on each client. Clients are
+  numbered oldest first, so each keeps its cores while others open and close.
 - **Memory:** `EmptyWorkingSet` on each Roblox client and `NtSetSystemInformation` to purge the standby list.
 
 ## Build

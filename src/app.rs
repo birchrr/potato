@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, Frame, Margin, RichText, Stroke, Ui};
-use potato::config::Config;
+use potato::config::{Config, Priority};
 use potato::files;
-use potato::tweaks::MACRO_SAFE_MIN_FPS;
+use potato::tweaks::{MACRO_SAFE_MIN_FPS, core_masks};
 
-use crate::system::{self, Client, Profile};
+use crate::system::{self, Client, Cpu, Profile};
 
 const TICK: Duration = Duration::from_secs(2);
 
@@ -54,6 +54,9 @@ struct App {
     /// the config each user's files were last written with
     applied: HashMap<String, Config>,
     memory: (u64, u64),
+    /// what each client's CPU settings were last set to, so they're only set again when something changes
+    cpu_set: HashMap<u32, (Priority, Option<u64>, bool)>,
+    cores: usize,
     last_tick: Option<Instant>,
     last_trim: Instant,
     last_clean: Instant,
@@ -72,6 +75,8 @@ impl App {
             states: HashMap::new(),
             applied: HashMap::new(),
             memory: (0, 0),
+            cpu_set: HashMap::new(),
+            cores: system::logical_cores(),
             last_tick: None,
             last_trim: Instant::now(),
             last_clean: Instant::now(),
@@ -116,6 +121,7 @@ impl App {
             };
             self.states.insert(p.sid.clone(), state);
         }
+        self.apply_cpu();
         let minutes = self.config.trim_minutes;
         if minutes > 0 && self.last_trim.elapsed() >= Duration::from_secs(minutes as u64 * 60) {
             self.trim_all(false);
@@ -125,6 +131,24 @@ impl App {
             && self.last_clean.elapsed() >= Duration::from_secs(60) {
             self.clean(false);
         }
+    }
+
+    /// Priority, cores and Efficiency Mode for every client. Clients are taken oldest first (by PID), so each
+    /// keeps its cores while others open and close.
+    fn apply_cpu(&mut self) {
+        let mut pids: Vec<u32> = self.clients.iter().map(|c| c.pid).collect();
+        pids.sort();
+        let c = &self.config;
+        let masks = (c.cores_per_client > 0).then(|| core_masks(pids.len(), self.cores, c.cores_per_client as usize));
+        let untouched = (Priority::Off, None, false);
+        for (i, pid) in pids.iter().enumerate() {
+            let want = (c.priority, masks.as_ref().map(|m| m[i]), c.efficiency);
+            let had = self.cpu_set.get(pid).copied().unwrap_or(untouched);
+            if want != had && system::set_cpu(*pid, &Cpu { priority: want.0, cores: want.1, efficiency: want.2 }) {
+                self.cpu_set.insert(*pid, want);
+            }
+        }
+        self.cpu_set.retain(|pid, _| pids.contains(pid));
     }
 
     fn trim_all(&mut self, say: bool) {
@@ -162,6 +186,8 @@ impl eframe::App for App {
                 self.clients_card(ui);
                 ui.add_space(12.0);
                 self.settings_card(ui);
+                ui.add_space(12.0);
+                self.cpu_card(ui);
                 ui.add_space(12.0);
                 self.memory_card(ui);
                 if !self.note.is_empty() {
@@ -291,6 +317,32 @@ impl App {
                 self.applied.clear();
                 self.note = format!("Restored {n} Files. Tick a user to turn Potato back on.");
             }
+        });
+    }
+
+    fn cpu_card(&mut self, ui: &mut Ui) {
+        let cores = self.cores;
+        let c = &mut self.config;
+        card(ui, "CPU", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Priority");
+                egui::ComboBox::from_id_salt("priority").selected_text(c.priority.label()).show_ui(ui, |ui| {
+                    for p in Priority::ALL {
+                        ui.selectable_value(&mut c.priority, p, p.label());
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                let mut on = c.cores_per_client > 0;
+                if ui.checkbox(&mut on, "Give Each Client Its Own Cores").changed() {
+                    c.cores_per_client = if on { 2.min(cores as u32) } else { 0 };
+                }
+                if c.cores_per_client > 0 {
+                    ui.add(egui::DragValue::new(&mut c.cores_per_client).range(1..=cores as u32).suffix(" Cores"));
+                }
+            });
+            ui.checkbox(&mut c.efficiency, "Efficiency Mode").on_hover_text("Windows 11 runs the clients on less power");
+            hint(ui, &format!("{cores} cores on this PC. None of this changes how the game looks; Low priority and Efficiency Mode can lower FPS when the PC is busy."));
         });
     }
 

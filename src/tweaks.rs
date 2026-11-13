@@ -168,3 +168,35 @@ mod tests {
         assert!(apply_flags("", &plan(None, true, false)).is_some());
     }
 }
+
+/// CPU cores for each client when every client gets `per` cores of its own: client i takes the next `per`
+/// cores, wrapping around when there are more clients than cores. Bit n of a mask is logical core n.
+pub fn core_masks(clients: usize, cores: usize, per: usize) -> Vec<u64> {
+    let cores = cores.clamp(1, 64);
+    let per = per.clamp(1, cores);
+    (0..clients)
+        .map(|i| (0..per).fold(0u64, |m, k| m | 1 << ((i * per + k) % cores)))
+        .collect()
+}
+
+#[cfg(test)]
+mod core_tests {
+    use super::core_masks;
+
+    #[test]
+    fn each_client_gets_its_own_cores() {
+        assert_eq!(core_masks(3, 8, 2), vec![0b11, 0b1100, 0b110000]);
+    }
+
+    #[test]
+    fn wraps_when_clients_outnumber_cores() {
+        assert_eq!(core_masks(5, 4, 1), vec![1, 2, 4, 8, 1]);
+        assert_eq!(core_masks(2, 3, 2), vec![0b011, 0b101]);
+    }
+
+    #[test]
+    fn never_asks_for_more_cores_than_exist() {
+        assert_eq!(core_masks(1, 4, 9), vec![0b1111]);
+        assert_eq!(core_masks(1, 128, 1), vec![1]);
+    }
+}

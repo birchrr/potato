@@ -21,9 +21,13 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SET_QUOTA,
+    BELOW_NORMAL_PRIORITY_CLASS, GetActiveProcessorCount, GetCurrentProcess, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+    OpenProcess, OpenProcessToken, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+    PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
+    ProcessPowerThrottling, SetPriorityClass, SetProcessAffinityMask, SetProcessInformation, ALL_PROCESSOR_GROUPS,
 };
+
+use potato::config::Priority;
 use windows::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -150,6 +154,43 @@ pub fn trim(pid: u32) -> bool {
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, false, pid) else { return false };
         let ok = K32EmptyWorkingSet(h).as_bool();
+        let _ = CloseHandle(h);
+        ok
+    }
+}
+
+/// Logical cores (threads) on the PC.
+pub fn logical_cores() -> usize {
+    unsafe { GetActiveProcessorCount(ALL_PROCESSOR_GROUPS) as usize }
+}
+
+/// How one client should use the CPU. Off values put it back to Windows' normal.
+pub struct Cpu {
+    pub priority: Priority,
+    /// None: every core
+    pub cores: Option<u64>,
+    pub efficiency: bool,
+}
+
+/// Set a client's priority, cores and Efficiency Mode, like Process Lasso. Returns false if Windows refused.
+pub fn set_cpu(pid: u32, cpu: &Cpu) -> bool {
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let class = match cpu.priority {
+            Priority::Off => NORMAL_PRIORITY_CLASS,
+            Priority::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
+            Priority::Idle => IDLE_PRIORITY_CLASS,
+        };
+        let all = if logical_cores() >= 64 { u64::MAX } else { (1u64 << logical_cores()) - 1 };
+        let mut ok = SetPriorityClass(h, class).is_ok();
+        ok &= SetProcessAffinityMask(h, cpu.cores.unwrap_or(all) as usize).is_ok();
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: 1,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: if cpu.efficiency { PROCESS_POWER_THROTTLING_EXECUTION_SPEED } else { 0 },
+        };
+        ok &= SetProcessInformation(h, ProcessPowerThrottling, &state as *const _ as *const c_void,
+                                    size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32).is_ok();
         let _ = CloseHandle(h);
         ok
     }
