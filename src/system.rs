@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 
 use windows::core::{PCWSTR, PWSTR, w};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree, LUID};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HLOCAL, LocalFree, LUID};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows::Win32::Security::{
     AdjustTokenPrivileges, GetTokenInformation, LookupAccountSidW, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
@@ -21,7 +21,8 @@ use windows::Win32::System::Registry::{
 use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
 use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 use windows::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, GetActiveProcessorCount, GetCurrentProcess, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+    BELOW_NORMAL_PRIORITY_CLASS, GetActiveProcessorCount, GetCurrentProcess, GetProcessTimes, IDLE_PRIORITY_CLASS,
+    NORMAL_PRIORITY_CLASS, PROCESS_TERMINATE, TerminateProcess,
     OpenProcess, OpenProcessToken, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
     PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA,
     ProcessPowerThrottling, SetPriorityClass, SetProcessAffinityMask, SetProcessInformation, ALL_PROCESSOR_GROUPS,
@@ -42,6 +43,8 @@ pub struct Client {
     pub sid: String,
     pub user: String,
     pub ram: u64,
+    /// when it started (Windows file time), to tell newer clients from older ones
+    pub started: u64,
 }
 
 /// A Windows account on this PC that has Roblox installed.
@@ -105,7 +108,7 @@ pub fn clients() -> Vec<Client> {
 fn client(pid: u32) -> Client {
     let mut session = 0;
     let _ = unsafe { ProcessIdToSessionId(pid, &mut session) };
-    let mut c = Client { pid, session, sid: String::new(), user: String::new(), ram: 0 };
+    let mut c = Client { pid, session, sid: String::new(), user: String::new(), ram: 0, started: 0 };
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_QUERY_INFORMATION, false, pid)
             .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
@@ -115,6 +118,10 @@ fn client(pid: u32) -> Client {
         let mut mem = PROCESS_MEMORY_COUNTERS::default();
         if K32GetProcessMemoryInfo(h, &mut mem, size_of::<PROCESS_MEMORY_COUNTERS>() as u32).as_bool() {
             c.ram = mem.WorkingSetSize as u64;
+        }
+        let (mut created, mut a, mut b, mut d) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        if GetProcessTimes(h, &mut created, &mut a, &mut b, &mut d).is_ok() {
+            c.started = (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64;
         }
         if let Some((sid, user)) = owner(h) {
             c.sid = sid;
@@ -154,6 +161,27 @@ pub fn console_session() -> u32 {
     unsafe { WTSGetActiveConsoleSessionId() }
 }
 
+/// Close a Roblox client.
+pub fn close(pid: u32) -> bool {
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_TERMINATE, false, pid) else { return false };
+        let ok = TerminateProcess(h, 0).is_ok();
+        let _ = CloseHandle(h);
+        ok
+    }
+}
+
+/// The SID of the account this copy of Potato runs as.
+pub fn current_sid() -> String {
+    unsafe { owner(GetCurrentProcess()) }.map(|(sid, _)| sid).unwrap_or_default()
+}
+
+/// Open a link in the default browser.
+pub fn open_url(url: &str) {
+    let url: Vec<u16> = url.encode_utf16().chain([0]).collect();
+    unsafe { ShellExecuteW(None, w!("open"), PCWSTR(url.as_ptr()), None, None, SW_SHOWNORMAL) };
+}
+
 /// Move a client's memory out to the page file, like Mem Reduct does. Roblox pulls back what it uses.
 pub fn trim(pid: u32) -> bool {
     unsafe {
@@ -182,7 +210,7 @@ pub fn set_cpu(pid: u32, cpu: &Cpu) -> bool {
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
         let class = match cpu.priority {
-            Priority::Off => NORMAL_PRIORITY_CLASS,
+            Priority::Normal => NORMAL_PRIORITY_CLASS,
             Priority::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
             Priority::Idle => IDLE_PRIORITY_CLASS,
         };

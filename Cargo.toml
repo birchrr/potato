@@ -1,6 +1,6 @@
 [package]
 name = "potato"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Make every Roblox client on your PC run light, RDP sessions included. Safe with Natro Macro."

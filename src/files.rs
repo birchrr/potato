@@ -82,24 +82,41 @@ pub fn all_files(local: &Path) -> Vec<PathBuf> {
     basic_settings(local).into_iter().chain(flag_files(local)).collect()
 }
 
-/// Apply the plan to one user's files. Call it only while none of that user's Roblox clients run: Roblox
-/// writes its settings file when it closes. Returns how many files changed.
-pub fn apply(local: &Path, plan: &Plan) -> io::Result<usize> {
-    let mut n = 0;
+/// Each of this user's files that the plan would change, with its new text.
+fn changes(local: &Path, plan: &Plan) -> io::Result<Vec<(PathBuf, String)>> {
+    let mut out = Vec::new();
     if let Some(xml_path) = basic_settings(local) {
         let xml = fs::read_to_string(&xml_path)?;
-        n += write(&xml_path, &tweaks::apply_basic_settings(&xml, plan))? as usize;
+        let next = tweaks::apply_basic_settings(&xml, plan);
+        if next != xml {
+            out.push((xml_path, next));
+        }
     }
     for path in flag_files(local) {
         let json = fs::read_to_string(&path).unwrap_or_default();
-        if json.is_empty() && !plan.effective().extras {
+        if json.is_empty() && !plan.ultra_low {
             continue;   // nothing to add and nothing to take out
         }
-        if let Some(next) = tweaks::apply_flags(&json, plan) {
-            n += write(&path, &next)? as usize;
+        if let Some(next) = tweaks::apply_flags(&json, plan).filter(|n| *n != json) {
+            out.push((path, next));
         }
     }
-    Ok(n)
+    Ok(out)
+}
+
+/// Whether this user's files already match the plan (nothing left to write).
+pub fn is_applied(local: &Path, plan: &Plan) -> io::Result<bool> {
+    Ok(changes(local, plan)?.is_empty())
+}
+
+/// Apply the plan to one user's files. Call it only while none of that user's Roblox clients run: Roblox
+/// writes its settings file when it closes. Returns how many files changed.
+pub fn apply(local: &Path, plan: &Plan) -> io::Result<usize> {
+    let todo = changes(local, plan)?;
+    for (path, text) in &todo {
+        write(path, text)?;
+    }
+    Ok(todo.len())
 }
 
 #[cfg(test)]
@@ -125,8 +142,8 @@ mod tests {
         local
     }
 
-    fn plan(extras: bool) -> Plan {
-        Plan { lowest_graphics: true, fps_cap: Some(40), extras, macro_safe: !extras }
+    fn plan(ultra_low: bool) -> Plan {
+        Plan { lowest_graphics: true, fps_cap: Some(40), ultra_low, maximized: false }
     }
 
     #[test]
@@ -143,7 +160,9 @@ mod tests {
     fn apply_then_restore_gets_the_originals_back() {
         let local = user("restore");
         let xml = basic_settings(&local).unwrap();
+        assert!(!is_applied(&local, &plan(true)).unwrap());
         assert_eq!(apply(&local, &plan(true)).unwrap(), 3);
+        assert!(is_applied(&local, &plan(true)).unwrap());
         assert!(fs::read_to_string(&xml).unwrap().contains(">40<"));
         assert_eq!(apply(&local, &plan(true)).unwrap(), 0);   // already applied: nothing to write
         assert_eq!(restore(&all_files(&local)).unwrap(), 3);
@@ -152,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn macro_safe_leaves_missing_flag_files_missing() {
+    fn without_ultra_low_missing_flag_files_stay_missing() {
         let local = user("safe");
         assert_eq!(apply(&local, &plan(false)).unwrap(), 1);
         assert!(flag_files(&local).iter().all(|p| !p.exists()));
