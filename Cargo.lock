@@ -2794,10 +2794,12 @@ dependencies = [
 
 [[package]]
 name = "potato"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "eframe",
  "egui_kittest",
+ "image",
+ "png",
  "raw-window-handle",
  "serde_json",
  "sha2",

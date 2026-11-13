@@ -58,8 +58,29 @@ pub struct Engine {
     pub cores: usize,
     pub update: Update,
     pub note: String,
+    /// each client's CPU use since the last look, in percent of the whole PC
+    pub cpu_pct: HashMap<u32, f32>,
+    /// restarts and crash rejoins per account, for the report
+    pub restarts: HashMap<String, u32>,
     /// what each client's CPU settings were last set to, so they're only set again when something changes
     cpu_set: HashMap<u32, (Priority, Option<u64>, bool)>,
+    cpu_seen: HashMap<u32, (u64, Instant)>,
+    /// each capped client's job and the cap it has
+    jobs: HashMap<u32, (u32, isize)>,
+    /// clients Potato closed itself, so they don't count as crashes
+    closed_by_us: HashSet<u32>,
+    /// the last clients seen: PID -> account
+    last_clients: HashMap<u32, String>,
+    /// where each client is, for accounts that rejoin after a crash: PID -> (server, when it was read)
+    whereabouts: HashMap<u32, (rejoin::Server, Instant)>,
+    /// crashed clients waiting a moment in case something else reopens them: (account, server, when)
+    crashed: Vec<(String, rejoin::Server, Instant)>,
+    upload_applied: Option<u32>,
+    shutdown_done: Option<u32>,
+    last_report: Instant,
+    /// a report waiting for the helpers' screenshots: (request id, when asked)
+    report_pending: Option<(u64, Instant)>,
+    reported_freezes: HashMap<String, u32>,
     maximizer: Maximizer,
     helper_installed: Option<bool>,
     last_update_check: Option<Instant>,
@@ -88,7 +109,20 @@ impl Engine {
             cores: system::logical_cores(),
             update: Update::default(),
             note: String::new(),
+            cpu_pct: HashMap::new(),
+            restarts: HashMap::new(),
             cpu_set: HashMap::new(),
+            cpu_seen: HashMap::new(),
+            jobs: HashMap::new(),
+            closed_by_us: HashSet::new(),
+            last_clients: HashMap::new(),
+            whereabouts: HashMap::new(),
+            crashed: Vec::new(),
+            upload_applied: None,
+            shutdown_done: None,
+            last_report: Instant::now(),
+            report_pending: None,
+            reported_freezes: HashMap::new(),
             maximizer: Maximizer::default(),
             helper_installed: None,
             last_update_check: None,
@@ -111,10 +145,10 @@ impl Engine {
         });
         let me = engine.lock().unwrap().me.clone();
         std::thread::spawn(move || {
-            let mut done = 0;
+            let mut jobs = helper::SessionJobs::default();
             loop {
                 if !helper::running_here() {
-                    helper::serve_rejoins(&me, &mut done);
+                    helper::session_tick(&me, &mut jobs);   // a helper in this login would do it instead
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -163,9 +197,15 @@ impl Engine {
             };
             self.states.insert(p.sid.clone(), state);
         }
+        self.measure_cpu();
+        self.watch_crashes();
         self.close_extras();
+        self.restart_hogs();
         self.apply_cpu();
         self.keep_maximized();
+        self.apply_upload_cap();
+        self.shutdown_on_time();
+        self.report();
         let hours = self.config.restart_hours;
         if hours > 0 && self.last_restart.elapsed() >= Duration::from_secs(hours as u64 * 3600) {
             self.restart_clients();
@@ -187,6 +227,7 @@ impl Engine {
         if extra.is_empty() {
             return;
         }
+        self.closed_by_us.extend(extra.iter().copied());
         let n = extra.iter().filter(|pid| system::close(**pid)).count();
         self.note = format!("Closed {n} Extra {}", if n == 1 { "Client" } else { "Clients" });
         self.clients.retain(|c| !extra.contains(&c.pid));
@@ -209,6 +250,200 @@ impl Engine {
         }
         let pids: HashSet<u32> = self.clients.iter().map(|c| c.pid).collect();
         self.cpu_set.retain(|pid, _| pids.contains(pid));
+        // hard CPU caps: a job per capped client; a lifted cap goes back to 100%
+        for c in &self.clients {
+            let a = self.config.account(&c.sid);
+            let want = if a.on { a.cpu_limit } else { 0 };
+            let had = self.jobs.get(&c.pid).map_or(0, |j| j.0);
+            if want == had || (want == 0 && had == 100) {
+                continue;
+            }
+            let mut job = self.jobs.get(&c.pid).map(|j| j.1);
+            if system::cpu_cap(c.pid, if want == 0 { 100 } else { want }, &mut job)
+                && let Some(j) = job {
+                self.jobs.insert(c.pid, (if want == 0 { 100 } else { want }, j));
+            }
+        }
+        for (_, j) in self.jobs.extract_if(|pid, _| !pids.contains(pid)) {
+            system::drop_job(j.1);
+        }
+    }
+
+    fn measure_cpu(&mut self) {
+        let now = Instant::now();
+        let cores = self.cores.max(1) as f32;
+        self.cpu_pct.clear();
+        for c in &self.clients {
+            if let Some((t, at)) = self.cpu_seen.get(&c.pid) {
+                let wall = now.duration_since(*at).as_nanos() as f32 / 100.0;   // in 100 ns, like cpu_time
+                if wall > 0.0 {
+                    self.cpu_pct.insert(c.pid, (c.cpu_time.saturating_sub(*t) as f32 / wall / cores * 100.0).min(100.0));
+                }
+            }
+        }
+        self.cpu_seen = self.clients.iter().map(|c| (c.pid, (c.cpu_time, now))).collect();
+    }
+
+    /// Notice clients that closed without Potato closing them. For accounts with Rejoin After A Crash, wait
+    /// 20 seconds in case something else (like a macro) reopens them, then send them back to their server.
+    fn watch_crashes(&mut self) {
+        let now: HashMap<u32, String> = self.clients.iter().map(|c| (c.pid, c.sid.clone())).collect();
+        for (pid, sid) in &self.last_clients {
+            if now.contains_key(pid) || self.closed_by_us.remove(pid) {
+                continue;
+            }
+            if let Some((server, _)) = self.whereabouts.remove(pid)
+                && self.config.account(sid).on && self.config.account(sid).rejoin_crashed {
+                self.crashed.push((sid.clone(), server, Instant::now()));
+            }
+        }
+        self.last_clients = now;
+        // keep each watched client's server fresh (its log is re-read every 30 s, so teleports are followed)
+        for c in &self.clients {
+            let a = self.config.account(&c.sid);
+            let stale = self.whereabouts.get(&c.pid).is_none_or(|(_, at)| at.elapsed() > Duration::from_secs(30));
+            if a.on && a.rejoin_crashed && stale {
+                let log = self.profiles.iter().find(|p| p.sid == c.sid).and_then(|p| files::client_log(&p.local, c.started));
+                if let Some(s) = rejoin::server(system::command_line(c.pid).as_deref(), log.as_deref()) {
+                    self.whereabouts.insert(c.pid, (s, Instant::now()));
+                }
+            }
+        }
+        let pids: HashSet<u32> = self.clients.iter().map(|c| c.pid).collect();
+        self.whereabouts.retain(|pid, _| pids.contains(pid));
+        let mut due = Vec::new();
+        self.crashed.retain(|(sid, server, at)| {
+            if self.clients.iter().any(|c| &c.sid == sid && c.started >= system_time_now().saturating_sub(at.elapsed().as_nanos() as u64 / 100)) {
+                return false;   // a new client opened for the account: something else rejoined it
+            }
+            if at.elapsed() < Duration::from_secs(20) {
+                return true;
+            }
+            due.push((sid.clone(), server.clone()));
+            false
+        });
+        for (sid, server) in due {
+            if self.send_rejoins(&[(sid.as_str(), vec![server])]) > 0 {
+                *self.restarts.entry(sid).or_default() += 1;
+                self.note = "Rejoined A Crashed Client".into();
+            }
+        }
+    }
+
+    /// Restart clients that grew past their account's memory limit.
+    fn restart_hogs(&mut self) {
+        let hogs: HashSet<u32> = self.clients.iter().filter(|c| {
+            let a = self.config.account(&c.sid);
+            a.on && a.ram_limit_mb > 0 && c.ram > a.ram_limit_mb as u64 * (1 << 20)
+        }).map(|c| c.pid).collect();
+        if !hogs.is_empty() {
+            self.restart(|c| hogs.contains(&c.pid));
+        }
+    }
+
+    /// Roblox's upload limit, through a Windows QoS policy (applied again whenever Potato starts).
+    fn apply_upload_cap(&mut self) {
+        let want = self.config.upload_kbps;
+        if self.upload_applied == Some(want) {
+            return;
+        }
+        self.upload_applied = Some(want);
+        let mut script = "Remove-NetQosPolicy -Name Potato -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue".to_string();
+        if want > 0 {
+            script += &format!("; New-NetQosPolicy -Name Potato -PolicyStore ActiveStore -AppPathNameMatchCondition RobloxPlayerBeta.exe -ThrottleRateActionBitsPerSecond {}", want as u64 * 1000);
+        }
+        if !system::run("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script]) && want > 0 {
+            self.note = "Couldn't Set The Upload Cap".into();
+        }
+    }
+
+    fn shutdown_on_time(&mut self) {
+        let Some(at) = config::parse_time(&self.config.shutdown_at) else { return };
+        let now = system::local_minutes();
+        if now != at {
+            self.shutdown_done = None;
+        } else if self.shutdown_done.is_none() {
+            self.shutdown_done = Some(at);
+            system::run("shutdown", &["/s", "/t", "60", "/c", "Potato is turning the PC off in a minute (shutdown /a cancels)"]);
+            self.note = "Turning The PC Off In A Minute".into();
+        }
+    }
+
+    /// Every few minutes, post a report to the Discord webhook. With screenshots on, the helpers are asked for
+    /// them first and the report goes out a few seconds later.
+    fn report(&mut self) {
+        let d = self.config.discord.clone();
+        if !config::Discord::valid_webhook(&d.webhook) {
+            return;
+        }
+        if let Some((id, asked)) = self.report_pending {
+            if asked.elapsed() >= Duration::from_secs(6) {
+                self.report_pending = None;
+                self.post_report(Some(id));
+            }
+            return;
+        }
+        if self.last_report.elapsed() >= Duration::from_secs(d.every_minutes.max(5) as u64 * 60) {
+            self.send_report_now();
+        }
+    }
+
+    /// Start a report right away (also the Send Test Report button).
+    pub fn send_report_now(&mut self) {
+        self.last_report = Instant::now();
+        if self.config.discord.screenshots {
+            let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            let dir = helper::report_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            if std::fs::write(dir.join("request.txt"), id.to_string()).is_ok() {
+                self.report_pending = Some((id, Instant::now()));
+                return;
+            }
+        }
+        self.post_report(None);
+    }
+
+    fn post_report(&mut self, shots: Option<u64>) {
+        let dir = helper::report_dir();
+        let mut accounts = Vec::new();
+        for p in &self.profiles {
+            let a = self.config.account(&p.sid);
+            let mine: Vec<&Client> = self.clients.iter().filter(|c| c.sid == p.sid).collect();
+            let stats: serde_json::Value = std::fs::read_to_string(dir.join(format!("{}.json", p.sid))).ok()
+                .and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+            let total = stats["freezes"].as_u64().unwrap_or(0) as u32;
+            let last = self.reported_freezes.insert(p.sid.clone(), total).unwrap_or(total);
+            let images: Vec<PathBuf> = match (shots, stats["id"].as_u64()) {
+                (Some(id), Some(got)) if got == id => (0..stats["shots"].as_u64().unwrap_or(0).min(4))
+                    .map(|i| dir.join(format!("{}-{i}.png", p.sid))).filter(|f| f.exists()).collect(),
+                _ => Vec::new(),
+            };
+            accounts.push(crate::report::Account {
+                name: p.name.clone(),
+                on: a.on,
+                clients: mine.iter().map(|c| crate::report::Client {
+                    ram: c.ram, cpu: self.cpu_pct.get(&c.pid).copied().unwrap_or(0.0),
+                    up_minutes: system_time_now().saturating_sub(c.started) / 600_000_000,
+                }).collect(),
+                freezes: total.saturating_sub(last),
+                frozen_now: stats["frozenNow"].as_u64().unwrap_or(0) as u32,
+                restarts: self.restarts.remove(&p.sid).unwrap_or(0),
+                screenshots: images,
+            });
+        }
+        let pc = crate::report::Pc { used: self.memory.0, total: self.memory.1, freed: self.freed, version: env!("CARGO_PKG_VERSION") };
+        let (payload, files) = crate::report::build(&pc, &accounts);
+        let webhook = self.config.discord.webhook.clone();
+        std::thread::spawn(move || {
+            let mut args: Vec<String> = vec!["-s".into(), "-m".into(), "60".into(), "--form-string".into(), format!("payload_json={payload}")];
+            for (i, f) in files.iter().enumerate() {
+                args.push("-F".into());
+                args.push(format!("files[{i}]=@{};type=image/png;filename=shot{i}.png", f.display()));
+            }
+            args.push(webhook);
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            system::run("curl", &args);
+        });
     }
 
     /// This login's windows here; every other login's through the helper, installed while any account wants it.
@@ -253,13 +488,27 @@ impl Engine {
         }
     }
 
-    /// Close every client and reopen each in the server it was in. The reopening happens in each account's
-    /// own login (helper.rs); clients whose server can't be read are left running.
+    /// Close every client and reopen each in the server it was in.
     pub fn restart_clients(&mut self) {
         self.last_restart = Instant::now();
+        self.restart(|_| true);
+    }
+
+    /// Hand each account's join links to its login (helper.rs), one request file per account. Returns how
+    /// many accounts got one.
+    fn send_rejoins(&self, servers: &[(&str, Vec<rejoin::Server>)]) -> usize {
+        let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let dir = helper::rejoin_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        servers.iter().filter(|(sid, list)| std::fs::write(dir.join(format!("{sid}.txt")), rejoin::request(id, list)).is_ok()).count()
+    }
+
+    /// Close the picked clients and reopen each in the server it was in. The reopening happens in each
+    /// account's own login (helper.rs); clients whose server can't be read are left running.
+    fn restart(&mut self, pick: impl Fn(&Client) -> bool) {
         let mut servers: HashMap<&str, Vec<rejoin::Server>> = HashMap::new();
         let (mut close, mut unknown) = (Vec::new(), 0);
-        for c in &self.clients {
+        for c in self.clients.iter().filter(|c| pick(c)) {
             let log = self.profiles.iter().find(|p| p.sid == c.sid).and_then(|p| files::client_log(&p.local, c.started));
             match rejoin::server(system::command_line(c.pid).as_deref(), log.as_deref()) {
                 Some(s) if !c.sid.is_empty() => {
@@ -269,17 +518,16 @@ impl Engine {
                 _ => unknown += 1,
             }
         }
-        let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-        let dir = helper::rejoin_dir();
-        let _ = std::fs::create_dir_all(&dir);
-        let mut written = Vec::new();
-        for (sid, list) in &servers {
-            if std::fs::write(dir.join(format!("{sid}.txt")), rejoin::request(id, list)).is_ok() {
-                written.push(*sid);
-            }
+        let list: Vec<(&str, Vec<rejoin::Server>)> = servers.into_iter().collect();
+        if self.send_rejoins(&list) < list.len() {
+            self.note = "Couldn't Hand Every Restart To Its Account".into();
+            return;
         }
-        let closed = self.clients.iter().filter(|c| written.contains(&c.sid.as_str()) && close.contains(&c.pid))
-            .filter(|c| system::close(c.pid)).count();
+        for (sid, l) in &list {
+            *self.restarts.entry(sid.to_string()).or_default() += l.len() as u32;
+        }
+        self.closed_by_us.extend(close.iter().copied());
+        let closed = close.iter().filter(|pid| system::close(**pid)).count();
         self.note = format!("Restarting {closed} {}{}", if closed == 1 { "Client" } else { "Clients" },
             if unknown > 0 { format!(". Couldn't Find The Server For {unknown}, Left Those Open") } else { String::new() });
         self.last_tick = None;
@@ -296,6 +544,11 @@ impl Engine {
         self.changed();
         self.note = format!("Restored {n} Files. Switch an account back on to use Potato again.");
     }
+}
+
+/// Now, as a Windows file time (100 ns since 1601), to compare with client start times.
+fn system_time_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64 / 100 + 116_444_736_000_000_000)
 }
 
 const GIB: f64 = (1u64 << 30) as f64;

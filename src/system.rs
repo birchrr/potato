@@ -45,6 +45,8 @@ pub struct Client {
     pub ram: u64,
     /// when it started (Windows file time), to tell newer clients from older ones
     pub started: u64,
+    /// CPU time used so far (100 ns units), for its CPU % between two looks
+    pub cpu_time: u64,
 }
 
 /// A Windows account on this PC that has Roblox installed.
@@ -108,7 +110,7 @@ pub fn clients() -> Vec<Client> {
 fn client(pid: u32) -> Client {
     let mut session = 0;
     let _ = unsafe { ProcessIdToSessionId(pid, &mut session) };
-    let mut c = Client { pid, session, sid: String::new(), user: String::new(), ram: 0, started: 0 };
+    let mut c = Client { pid, session, sid: String::new(), user: String::new(), ram: 0, started: 0, cpu_time: 0 };
     unsafe {
         let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_QUERY_INFORMATION, false, pid)
             .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
@@ -119,9 +121,11 @@ fn client(pid: u32) -> Client {
         if K32GetProcessMemoryInfo(h, &mut mem, size_of::<PROCESS_MEMORY_COUNTERS>() as u32).as_bool() {
             c.ram = mem.WorkingSetSize as u64;
         }
-        let (mut created, mut a, mut b, mut d) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
-        if GetProcessTimes(h, &mut created, &mut a, &mut b, &mut d).is_ok() {
-            c.started = (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64;
+        let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+        if GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user).is_ok() {
+            let t = |f: FILETIME| (f.dwHighDateTime as u64) << 32 | f.dwLowDateTime as u64;
+            c.started = t(created);
+            c.cpu_time = t(kernel) + t(user);
         }
         if let Some((sid, user)) = owner(h) {
             c.sid = sid;
@@ -159,6 +163,67 @@ unsafe fn owner(process: HANDLE) -> Option<(String, String)> {
 /// The Windows login session at the PC's own screen; every other session is someone connected over RDP.
 pub fn console_session() -> u32 {
     unsafe { WTSGetActiveConsoleSessionId() }
+}
+
+/// Hold a client to at most `percent` of the whole PC's CPU, through a Windows job object (100 lifts it).
+/// `job` keeps the client's job between calls; the first call makes it and puts the client in it.
+pub fn cpu_cap(pid: u32, percent: u32, job: &mut Option<isize>) -> bool {
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE, JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+        JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JobObjectCpuRateControlInformation, SetInformationJobObject,
+    };
+    unsafe {
+        let handle = match *job {
+            Some(h) => HANDLE(h as *mut c_void),
+            None => {
+                let Ok(j) = CreateJobObjectW(None, None) else { return false };
+                let Ok(p) = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid) else {
+                    let _ = CloseHandle(j);
+                    return false;
+                };
+                let ok = AssignProcessToJobObject(j, p).is_ok();
+                let _ = CloseHandle(p);
+                if !ok {
+                    let _ = CloseHandle(j);
+                    return false;
+                }
+                *job = Some(j.0 as isize);
+                j
+            }
+        };
+        let mut info = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION {
+            ControlFlags: JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+            ..Default::default()
+        };
+        info.Anonymous.CpuRate = percent.clamp(1, 100) * 100;   // in 1/100 of a percent
+        SetInformationJobObject(handle, JobObjectCpuRateControlInformation, &info as *const _ as *const c_void,
+                                size_of::<JOBOBJECT_CPU_RATE_CONTROL_INFORMATION>() as u32).is_ok()
+    }
+}
+
+/// Let go of a client's job (when the client has closed).
+pub fn drop_job(job: isize) {
+    let _ = unsafe { CloseHandle(HANDLE(job as *mut c_void)) };
+}
+
+/// Windows' "Animation effects" setting (Settings, Accessibility, Visual effects).
+pub fn animations_on() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW};
+    let mut on = windows::core::BOOL(1);
+    let _ = unsafe { SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, Some(&mut on as *mut _ as *mut c_void), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)) };
+    on.as_bool()
+}
+
+/// Minutes since midnight, PC time.
+pub fn local_minutes() -> u32 {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    t.wHour as u32 * 60 + t.wMinute as u32
+}
+
+/// Run a Windows command without a console window; true if it worked.
+pub fn run(program: &str, args: &[&str]) -> bool {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new(program).args(args).creation_flags(0x0800_0000).status().is_ok_and(|s| s.success())
 }
 
 /// Close a Roblox client.

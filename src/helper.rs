@@ -2,7 +2,7 @@
 //! its own session and a hidden copy of Potato (`Potato.exe --helper`) runs in every other one, RDP logins
 //! included. A scheduled task starts that copy whenever any user logs on.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -13,7 +13,7 @@ use windows::Win32::System::Threading::{
     CreateMutexW, OpenMutexW, OpenProcess, PROCESS_NAME_WIN32, SYNCHRONIZATION_SYNCHRONIZE, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, SW_MAXIMIZE, ShowWindow,
+    EnumWindows, GetClientRect, GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindowVisible, IsZoomed, SW_MAXIMIZE, ShowWindow,
 };
 use windows::core::{BOOL, PWSTR, w};
 
@@ -79,16 +79,151 @@ pub fn run() {
     }
     let me = crate::system::current_sid();
     let mut m = Maximizer::default();
-    let mut rejoined = 0;
+    let mut jobs = SessionJobs::default();
     loop {
         let config = std::fs::read_to_string(crate::engine::config_path()).map(|t| crate::config::Config::from_json(&t)).unwrap_or_default();
         let a = config.account(&me);
         if a.on && a.plan.maximized {
             m.tick();
         }
-        serve_rejoins(&me, &mut rejoined);
+        session_tick(&me, &mut jobs);
         std::thread::sleep(Duration::from_secs(1));
     }
+}
+
+/// What only code inside a login can do for that login's Roblox: rejoins, muting, spotting freezes and
+/// taking screenshots for the Discord report. Run every second by the helper (or by the app for its own login).
+#[derive(Default)]
+pub struct SessionJobs {
+    rejoined: u64,
+    muted: HashSet<u32>,
+    hung: HashSet<isize>,
+    freezes: u32,
+    shot_done: u64,
+}
+
+/// The folder where the helpers leave freeze counts and screenshots for the report (see engine.rs).
+pub fn report_dir() -> PathBuf {
+    crate::engine::config_path().with_file_name("report")
+}
+
+pub fn session_tick(me: &str, jobs: &mut SessionJobs) {
+    serve_rejoins(me, &mut jobs.rejoined);
+    let config = std::fs::read_to_string(crate::engine::config_path()).map(|t| crate::config::Config::from_json(&t)).unwrap_or_default();
+    let a = config.account(me);
+    mute(a.on && a.mute, &mut jobs.muted);
+
+    let mut windows: Vec<isize> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(collect), LPARAM(&mut windows as *mut _ as isize));
+    }
+    let hung: HashSet<isize> = windows.iter().copied().filter(|h| unsafe { IsHungAppWindow(HWND(*h as *mut _)).as_bool() }).collect();
+    let before = jobs.freezes;
+    jobs.freezes += hung.difference(&jobs.hung).count() as u32;   // each window counts once per freeze
+    jobs.hung = hung;
+
+    let dir = report_dir();
+    let asked = std::fs::read_to_string(dir.join("request.txt")).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0);
+    let mut shots = None;
+    if asked > jobs.shot_done {
+        jobs.shot_done = asked;
+        let _ = std::fs::create_dir_all(&dir);
+        shots = Some(windows.iter().enumerate().filter(|(i, h)| capture(**h, &dir.join(format!("{me}-{i}.png")))).count());
+    }
+    if shots.is_some() || jobs.freezes != before {
+        let _ = std::fs::create_dir_all(&dir);
+        let json = serde_json::json!({ "id": jobs.shot_done, "freezes": jobs.freezes, "frozenNow": jobs.hung.len(), "shots": shots });
+        let _ = std::fs::write(dir.join(format!("{me}.json")), json.to_string());
+    }
+}
+
+/// Mute (or unmute what Potato muted) every Roblox audio session in this login.
+fn mute(on: bool, muted: &mut HashSet<u32>) {
+    use windows::Win32::Media::Audio::{
+        IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator, eConsole, eRender,
+    };
+    use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
+    use windows::core::Interface;
+    if !on && muted.is_empty() {
+        return;
+    }
+    let roblox: HashSet<u32> = crate::system::clients().iter().filter(|c| c.session == crate::system::current_session()).map(|c| c.pid).collect();
+    let _ = (|| -> windows::core::Result<()> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let manager: IAudioSessionManager2 = devices.GetDefaultAudioEndpoint(eRender, eConsole)?.Activate(CLSCTX_ALL, None)?;
+            let sessions = manager.GetSessionEnumerator()?;
+            for i in 0..sessions.GetCount()? {
+                let session = sessions.GetSession(i)?;
+                let pid = session.cast::<IAudioSessionControl2>()?.GetProcessId()?;
+                let volume = session.cast::<ISimpleAudioVolume>()?;
+                if on && roblox.contains(&pid) && !muted.contains(&pid) {
+                    volume.SetMute(true, std::ptr::null())?;
+                    muted.insert(pid);
+                } else if !on && muted.remove(&pid) {
+                    volume.SetMute(false, std::ptr::null())?;
+                }
+            }
+        }
+        Ok(())
+    })();
+    muted.retain(|pid| roblox.contains(pid));
+}
+
+/// Save a Roblox window as a PNG, at most 960 px wide. Works while it's covered; a minimized window, or one in
+/// a disconnected RDP login, has nothing drawn and is skipped.
+fn capture(hwnd: isize, path: &std::path::Path) -> bool {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS, DeleteDC, DeleteObject,
+        GetDC, GetDIBits, ReleaseDC, SelectObject,
+    };
+    use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
+    let h = HWND(hwnd as *mut _);
+    let mut r = RECT::default();
+    if unsafe { IsIconic(h).as_bool() || GetClientRect(h, &mut r).is_err() } {
+        return false;
+    }
+    let (w, ht) = (r.right - r.left, r.bottom - r.top);
+    if w < 50 || ht < 50 {
+        return false;
+    }
+    let mut pixels = vec![0u8; (w * ht * 4) as usize];
+    let ok = unsafe {
+        let screen = GetDC(None);
+        let dc = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, ht);
+        let old = SelectObject(dc, bmp.into());
+        let drawn = PrintWindow(h, dc, PRINT_WINDOW_FLAGS(3)).as_bool();   // client area, full content (works for DirectX)
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER { biSize: size_of::<BITMAPINFOHEADER>() as u32, biWidth: w, biHeight: -ht, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB.0, ..Default::default() },
+            ..Default::default()
+        };
+        let got = GetDIBits(dc, bmp, 0, ht as u32, Some(pixels.as_mut_ptr() as *mut _), &mut info, DIB_RGB_COLORS);
+        SelectObject(dc, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(dc);
+        ReleaseDC(None, screen);
+        drawn && got == ht
+    };
+    if !ok || pixels.chunks(4).all(|p| p[..3] == [0, 0, 0]) {
+        return false;   // nothing drawn
+    }
+    let step = (w as usize).div_ceil(960).max(1);
+    let (ow, oh) = ((w as usize).div_ceil(step), (ht as usize).div_ceil(step));
+    let mut out = Vec::with_capacity(ow * oh * 3);
+    for y in (0..ht as usize).step_by(step) {
+        for x in (0..w as usize).step_by(step) {
+            let p = (y * w as usize + x) * 4;
+            out.extend_from_slice(&[pixels[p + 2], pixels[p + 1], pixels[p]]);   // BGRA -> RGB
+        }
+    }
+    let Ok(file) = std::fs::File::create(path) else { return false };
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), ow as u32, oh as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().and_then(|mut w| w.write_image_data(&out)).is_ok()
 }
 
 /// The folder where the app leaves rejoin requests, one file per account (see rejoin.rs).
