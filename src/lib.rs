@@ -19,3 +19,4 @@ pub mod system;
 pub mod system;
 pub mod rejoin;
 pub mod report;
+pub mod card;

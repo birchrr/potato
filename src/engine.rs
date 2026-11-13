@@ -78,6 +78,9 @@ pub struct Engine {
     upload_applied: Option<u32>,
     shutdown_done: Option<u32>,
     last_report: Instant,
+    /// a look at RAM and CPU every 30 seconds since the last report, for the report's graphs
+    history: Vec<crate::report::Sample>,
+    history_start: Instant,
     /// a report waiting for the helpers' screenshots: (request id, when asked)
     report_pending: Option<(u64, Instant)>,
     reported_freezes: HashMap<String, u32>,
@@ -121,6 +124,8 @@ impl Engine {
             upload_applied: None,
             shutdown_done: None,
             last_report: Instant::now(),
+            history: Vec::new(),
+            history_start: Instant::now(),
             report_pending: None,
             reported_freezes: HashMap::new(),
             maximizer: Maximizer::default(),
@@ -198,6 +203,14 @@ impl Engine {
             self.states.insert(p.sid.clone(), state);
         }
         self.measure_cpu();
+        let at = self.history_start.elapsed().as_secs();
+        if self.history.last().is_none_or(|s| at >= s.at + 30) && self.history.len() < 2880 {
+            self.history.push(crate::report::Sample {
+                at, pc_used: self.memory.0,
+                roblox: self.clients.iter().map(|c| c.ram).sum(),
+                cpu: self.cpu_pct.values().sum::<f32>().min(100.0),
+            });
+        }
         self.watch_crashes();
         self.close_extras();
         self.restart_hogs();
@@ -369,7 +382,7 @@ impl Engine {
         }
     }
 
-    /// Every few minutes, post a report to the Discord webhook. With screenshots on, the helpers are asked for
+    /// Every hour, post a report to the Discord webhook. With screenshots on, the helpers are asked for
     /// them first and the report goes out a few seconds later.
     fn report(&mut self) {
         let d = self.config.discord.clone();
@@ -383,7 +396,7 @@ impl Engine {
             }
             return;
         }
-        if self.last_report.elapsed() >= Duration::from_secs(d.every_minutes.max(5) as u64 * 60) {
+        if self.last_report.elapsed() >= Duration::from_secs(3600) {   // the report and its graphs cover one hour
             self.send_report_now();
         }
     }
@@ -432,7 +445,14 @@ impl Engine {
             });
         }
         let pc = crate::report::Pc { used: self.memory.0, total: self.memory.1, freed: self.freed, version: env!("CARGO_PKG_VERSION") };
-        let (payload, files) = crate::report::build(&pc, &accounts);
+        let history = std::mem::take(&mut self.history);
+        self.history_start = Instant::now();
+        let card = dir.join("card.png");
+        let _ = std::fs::create_dir_all(&dir);
+        if std::fs::write(&card, crate::card::render(&pc, &accounts, &history)).is_err() {
+            return;
+        }
+        let (payload, files) = crate::report::build(&accounts, card);
         let webhook = self.config.discord.webhook.clone();
         std::thread::spawn(move || {
             let mut args: Vec<String> = vec!["-s".into(), "-m".into(), "60".into(), "--form-string".into(), format!("payload_json={payload}")];

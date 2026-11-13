@@ -1,6 +1,6 @@
 [package]
 name = "potato"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2024"
 license = "MIT"
 description = "Make every Roblox client on your PC run light, RDP logins included, with settings per account."
@@ -12,6 +12,8 @@ serde_json = "1.0.154"
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "clipboard"] }
 sha2 = "0.11.1"
 png = "0.18.1"
+tiny-skia = "0.11"
+ab_glyph = "0.2"
 
 # eframe needs a window system on Linux; only the demo build (tests/window.rs) uses it there
 [target."cfg(not(windows))".dependencies]

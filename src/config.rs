@@ -97,7 +97,6 @@ pub struct Config {
 pub struct Discord {
     /// https://discord.com/api/webhooks/... (empty = off)
     pub webhook: String,
-    pub every_minutes: u32,
     pub screenshots: bool,
 }
 
@@ -113,7 +112,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             accounts: BTreeMap::new(), cores_per_client: 0, trim_minutes: 5, clean_above: 0, restart_hours: 0, upload_kbps: 0,
-            shutdown_at: String::new(), discord: Discord { webhook: String::new(), every_minutes: 30, screenshots: true },
+            shutdown_at: String::new(), discord: Discord { webhook: String::new(), screenshots: true },
         }
     }
 }
@@ -136,7 +135,7 @@ impl Config {
         serde_json::to_string_pretty(&json!({
             "accounts": accounts, "coresPerClient": self.cores_per_client, "trimMinutes": self.trim_minutes, "cleanAbove": self.clean_above,
             "restartHours": self.restart_hours, "uploadKbps": self.upload_kbps, "shutdownAt": self.shutdown_at,
-            "discord": { "webhook": self.discord.webhook, "everyMinutes": self.discord.every_minutes, "screenshots": self.discord.screenshots },
+            "discord": { "webhook": self.discord.webhook, "screenshots": self.discord.screenshots },
         }))
         .unwrap()
     }
@@ -176,7 +175,6 @@ impl Config {
             shutdown_at: v["shutdownAt"].as_str().and_then(parse_time).map(format_time).unwrap_or_default(),
             discord: Discord {
                 webhook: v["discord"]["webhook"].as_str().filter(|u| Discord::valid_webhook(u)).unwrap_or_default().to_string(),
-                every_minutes: num(&v["discord"]["everyMinutes"], d.discord.every_minutes).max(5),
                 screenshots: v["discord"]["screenshots"].as_bool().unwrap_or(d.discord.screenshots),
             },
         }
@@ -251,7 +249,7 @@ mod tests {
     fn round_trips() {
         let mut c = Config { cores_per_client: 2, trim_minutes: 0, clean_above: 85, restart_hours: 6, upload_kbps: 512,
                                 shutdown_at: "06:30".into(), ..Config::default() };
-        c.discord = Discord { webhook: "https://discord.com/api/webhooks/123/abc-DEF_9".into(), every_minutes: 15, screenshots: false };
+        c.discord = Discord { webhook: "https://discord.com/api/webhooks/123/abc-DEF_9".into(), screenshots: false };
         c.account_mut("S-1-5-21-4").mute = true;
         c.account_mut("S-1-5-21-4").cpu_limit = 25;
         c.account_mut("S-1-5-21-4").ram_limit_mb = 2500;

@@ -441,10 +441,8 @@ impl App {
                     ui.label(RichText::new("Not a Discord webhook").size(12.5).color(BAD));
                 }
             });
-            let list = [5, 10, 15, 30, 60, 120].map(|n| (n, if n < 60 { format!("Every {n} Min") } else { format!("Every {} {}", n / 60, if n == 60 { "Hour" } else { "Hours" }) }));
-            row(ui, "Send Every", "RAM, CPU, uptime, freezes and restarts for each account", false, |ui, id| { dropdown(ui, "report", id, &mut c.discord.every_minutes, &list); });
             switch_row(ui, "Screenshots", "Adds each RDP's Roblox window. A minimized or disconnected one can't be captured", false, &mut c.discord.screenshots);
-            row(ui, "Test It", "Sends a report now", true, |ui, id| {
+            row(ui, "Test It", "Sends a report now. Potato sends one by itself every hour", true, |ui, id| {
                 test = ui.add_enabled(!c.discord.webhook.is_empty(), egui::Button::new("Send Report")).labelled_by(id).clicked();
             });
         });
@@ -671,8 +669,10 @@ fn style(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 
     let mut v = egui::Visuals::dark();
-    // egui's dark-theme edge shading fattens dark text on the white buttons and toasts; gamma 1 keeps both clean
-    v.text_options.color_transfer_function = egui::epaint::FontColorTransferFunction::Gamma(1.0);
+    // egui's dark-theme edge shading fattens dark text on the white buttons and toasts, and hinting snaps letters
+    // to whole pixels, which looks jagged at 100% scaling: a middle gamma and no hinting keep every text smooth
+    v.text_options.color_transfer_function = egui::epaint::FontColorTransferFunction::Gamma(0.8);
+    v.text_options.font_hinting = false;
     v.panel_fill = BG;
     v.window_fill = CARD_HI;
     v.override_text_color = Some(TEXT);
