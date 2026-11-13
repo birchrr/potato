@@ -1,16 +1,21 @@
 [package]
 name = "potato"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 license = "MIT"
-description = "Make every Roblox client on your PC run light, RDP sessions included. Safe with Natro Macro."
+description = "Make every Roblox client on your PC run light, RDP logins included, with settings per account."
 repository = "https://github.com/birchrr/potato"
 
 [dependencies]
 serde_json = "1.0.154"
 
-[target."cfg(windows)".dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+
+# eframe needs a window system on Linux; only the demo build (tests/window.rs) uses it there
+[target."cfg(not(windows))".dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["x11"] }
+
+[target."cfg(windows)".dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_RemoteDesktop", "Win32_Security", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry"] }
 
 [target."cfg(windows)".build-dependencies]
@@ -21,3 +26,6 @@ lto = true
 strip = true
 opt-level = "s"
 codegen-units = 1
+
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["wgpu", "eframe", "snapshot"] }

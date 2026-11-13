@@ -28,7 +28,7 @@ use windows::Win32::System::Threading::{
     ProcessPowerThrottling, SetPriorityClass, SetProcessAffinityMask, SetProcessInformation, ALL_PROCESSOR_GROUPS,
 };
 
-use potato::config::Priority;
+use crate::config::Priority;
 use windows::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 

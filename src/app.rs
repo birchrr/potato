@@ -6,15 +6,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, Frame, Margin, RichText, Sense, Stroke, Ui};
-use potato::config::{self, Account, Config, Preset, Priority};
-use potato::files;
-use potato::tweaks::core_masks;
+use crate::config::{self, Account, Config, Preset, Priority};
+use crate::files;
+use crate::tweaks::core_masks;
 
 use crate::helper::{self, Maximizer};
 use crate::system::{self, Client, Cpu, Profile};
 
 const TICK: Duration = Duration::from_secs(2);
 const UPDATE_EVERY: Duration = Duration::from_secs(6 * 3600);
+#[cfg(windows)]
 const RELEASES: &str = "https://api.github.com/repos/birchrr/potato/releases/latest";
 
 const BG: Color32 = Color32::from_rgb(12, 12, 13);
@@ -35,7 +36,7 @@ pub fn run() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_title("Potato")
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default())
-            .with_inner_size([1000.0, 760.0]).with_min_inner_size([860.0, 560.0]),
+            .with_inner_size([1000.0, 800.0]).with_min_inner_size([860.0, 560.0]),
         ..Default::default()
     };
     eframe::run_native("Potato", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
@@ -59,9 +60,8 @@ enum State {
 /// A newer release on GitHub: (tag, page).
 type Update = Arc<Mutex<Option<(String, String)>>>;
 
-struct App {
+pub struct App {
     config: Config,
-    admin: bool,
     me: String,
     clients: Vec<Client>,
     profiles: Vec<Profile>,
@@ -84,13 +84,12 @@ struct App {
 }
 
 impl App {
-    fn new(ctx: &egui::Context) -> App {
+    pub fn new(ctx: &egui::Context) -> App {
         style(ctx);
         let config = std::fs::read_to_string(config_path()).map(|t| Config::from_json(&t)).unwrap_or_default();
         let profiles = system::profiles();
         App {
             config,
-            admin: system::is_admin(),
             me: system::current_sid(),
             clients: Vec::new(),
             selected: profiles.first().map(|p| p.sid.clone()),
@@ -159,7 +158,7 @@ impl App {
             self.trim_all(false);
         }
         let (used, total) = self.memory;
-        if self.admin && self.config.clean_above > 0 && total > 0 && used * 100 / total >= self.config.clean_above as u64
+        if self.config.clean_above > 0 && total > 0 && used * 100 / total >= self.config.clean_above as u64
             && self.last_clean.elapsed() >= Duration::from_secs(60) {
             self.clean(false);
         }
@@ -203,7 +202,7 @@ impl App {
             self.maximizer.tick();
         }
         let wanted = self.profiles.iter().map(|p| self.config.account(&p.sid)).any(|a| a.on && a.plan.maximized);
-        if self.admin && self.helper_installed != Some(wanted) {
+        if self.helper_installed != Some(wanted) {
             self.helper_installed = Some(wanted);
             if wanted {
                 if !helper::install() {
@@ -251,6 +250,10 @@ impl App {
 }
 
 /// Ask GitHub for the latest release in the background; curl ships with Windows 10 and 11.
+#[cfg(not(windows))]
+fn check_for_update(_: Update) {}
+
+#[cfg(windows)]
 fn check_for_update(update: Update) {
     use std::os::windows::process::CommandExt;
     std::thread::spawn(move || {
@@ -258,7 +261,7 @@ fn check_for_update(update: Update) {
             .creation_flags(0x0800_0000).output() else { return };
         let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return };
         if let (Some(tag), Some(url)) = (v["tag_name"].as_str(), v["html_url"].as_str())
-            && potato::version::is_newer(tag, env!("CARGO_PKG_VERSION")) {
+            && crate::version::is_newer(tag, env!("CARGO_PKG_VERSION")) {
             *update.lock().unwrap() = Some((tag.to_string(), url.to_string()));
         }
     });
@@ -277,11 +280,21 @@ impl eframe::App for App {
             ui.add_space(14.0);
             let h = (ui.available_height() - 34.0).max(300.0);
             ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;   // the gap between the columns; each column puts 8 back
                 let right = 350.0;
                 let left = ui.available_width() - right - 14.0;
-                ui.allocate_ui(egui::vec2(left, h), |ui| self.accounts(ui, h));
-                ui.add_space(14.0);
-                ui.allocate_ui(egui::vec2(right, h), |ui| self.settings(ui, h));
+                let down = egui::Layout::top_down(egui::Align::Min);
+                let pc = 104.0;
+                ui.allocate_ui_with_layout(egui::vec2(left, h), down, |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    self.accounts(ui, h - pc - 14.0);
+                    ui.add_space(14.0);
+                    self.whole_pc(ui, pc);
+                });
+                ui.allocate_ui_with_layout(egui::vec2(right, h), down, |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    self.settings(ui, h);
+                });
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
@@ -329,18 +342,12 @@ impl App {
             ui.add_space(4.0);
             ui.label(semi("Potato", 22.0).color(TEXT));
             ui.add_space(6.0);
-            if self.admin {
-                chip(ui, "Admin", GOOD);
-            } else if ui.button("Restart As Admin").on_hover_text("Needed for RDP accounts and Clean Memory").clicked()
-                && system::relaunch_as_admin() {
-                std::process::exit(0);
-            }
+            chip(ui, "Running", GOOD);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if primary(ui, "Trim All Roblox").clicked() {
                     self.trim_all(true);
                 }
-                if ui.add_enabled(self.admin, egui::Button::new("Clean Memory").min_size(egui::vec2(0.0, 32.0)))
-                    .on_disabled_hover_text("Needs admin").clicked() {
+                if ui.add(egui::Button::new("Clean Memory").min_size(egui::vec2(0.0, 32.0))).clicked() {
                     self.clean(true);
                 }
             });
@@ -374,7 +381,7 @@ impl App {
                 let t = ["", "Account", "Roblox", "RAM", "Settings", "Status"][col];
                 ui.label(RichText::new(t).size(12.0).color(FAINT));
             });
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("accounts").show(ui, |ui| {
                 for p in self.profiles.clone() {
                     let mine: Vec<&Client> = self.clients.iter().filter(|c| c.sid == p.sid).collect();
                     let ram: u64 = mine.iter().map(|c| c.ram).sum();
@@ -427,12 +434,10 @@ impl App {
             return;
         };
         let name = self.profiles.iter().find(|p| p.sid == sid).map_or("Account".to_string(), |p| p.name.clone());
-        let cores = self.cores;
-        let admin = self.admin;
         let sids: Vec<String> = self.profiles.iter().map(|p| p.sid.clone()).collect();
         let config = &mut self.config;
         card(ui, h, &format!("{name}'s Settings"), "", |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("settings").show(ui, |ui| {
                 let mut a = config.account(&sid);
                 let mut preset = Preset::of(&a);
                 if segmented(ui, &mut preset, &Preset::ALL.map(|p| (Some(p), p.label())))
@@ -440,26 +445,26 @@ impl App {
                     a = Account { on: a.on, max_clients: a.max_clients, ..p.account() };
                 }
                 section(ui, "Game");
-                setting(ui, "Lowest Graphics", "", |ui| { toggle(ui, &mut a.plan.lowest_graphics); });
-                setting(ui, "Open Maximized", "Fills the screen, keeps the title bar", |ui| { toggle(ui, &mut a.plan.maximized); });
-                setting(ui, "FPS Cap", "", |ui| {
+                setting(ui, "Lowest Graphics", "", |ui, id| { toggle(ui, &mut a.plan.lowest_graphics).labelled_by(id); });
+                setting(ui, "Open Maximized", "Fills the screen, keeps the title bar", |ui, id| { toggle(ui, &mut a.plan.maximized).labelled_by(id); });
+                setting(ui, "FPS Cap", "", |ui, id| {
                     let options = [(None, "Off"), (Some(15), "15"), (Some(25), "25"), (Some(30), "30"), (Some(60), "60")];
                     let mut fps = a.plan.fps_cap;
                     if segmented(ui, &mut fps, &options) {
                         a.plan.fps_cap = fps;
                     }
                     if let Some(f) = a.plan.fps_cap.as_mut().filter(|f| !options.iter().any(|(v, _)| *v == Some(**f))) {
-                        ui.add(egui::DragValue::new(f).range(5..=240));
+                        ui.add(egui::DragValue::new(f).range(5..=240)).labelled_by(id);
                     }
                 });
-                setting(ui, "Ultra Low", "Lowest textures, no grass, no anti-aliasing", |ui| { toggle(ui, &mut a.plan.ultra_low); });
+                setting(ui, "Ultra Low", "Lowest textures, no grass, no anti-aliasing", |ui, id| { toggle(ui, &mut a.plan.ultra_low).labelled_by(id); });
                 section(ui, "CPU");
-                setting(ui, "Priority", "", |ui| { segmented(ui, &mut a.priority, &Priority::ALL.map(|p| (p, p.label()))); });
-                setting(ui, "Efficiency Mode", "Windows 11 runs it on less power", |ui| { toggle(ui, &mut a.efficiency); });
+                setting(ui, "Priority", "", |ui, _| { segmented(ui, &mut a.priority, &Priority::ALL.map(|p| (p, p.label()))); });
+                setting(ui, "Efficiency Mode", "Windows 11 runs it on less power", |ui, id| { toggle(ui, &mut a.efficiency).labelled_by(id); });
                 section(ui, "Clients");
-                setting(ui, "Close Extra Clients", "Keeps the newest, closes older stuck ones", |ui| {
+                setting(ui, "Close Extra Clients", "Keeps the newest, closes older stuck ones", |ui, id| {
                     ui.add(egui::DragValue::new(&mut a.max_clients).range(0..=20)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("Keep {n}") }));
+                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("Keep {n}") })).labelled_by(id);
                 });
                 ui.add_space(6.0);
                 if sids.len() > 1 && ui.button("Use These For Every Account").clicked() {
@@ -470,24 +475,27 @@ impl App {
                 if a != config.account(&sid) {
                     *config.account_mut(&sid) = a;
                 }
+            });
+        });
+    }
 
-                ui.add_space(12.0);
-                ui.separator();
-                ui.label(semi("Whole PC", 13.5).color(TEXT));
-                ui.add_space(4.0);
-                setting(ui, "Own Cores Per Client", &format!("{cores} cores on this PC"), |ui| {
-                    ui.add(egui::DragValue::new(&mut config.cores_per_client).range(0..=cores as u32)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n} Cores") }));
+    /// Settings that are the same for every account, in three columns under the accounts table.
+    fn whole_pc(&mut self, ui: &mut Ui, h: f32) {
+        let cores = self.cores;
+        let c = &mut self.config;
+        card(ui, h, "Whole PC", "The same for every account", |ui| {
+            ui.columns(3, |cols| {
+                setting(&mut cols[0], "Own Cores Per Client", &format!("{cores} cores on this PC"), |ui, id| {
+                    ui.add(egui::DragValue::new(&mut c.cores_per_client).range(0..=cores as u32)
+                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n}") })).labelled_by(id);
                 });
-                setting(ui, "Trim Roblox Every", "Moves unused memory to the page file", |ui| {
-                    ui.add(egui::DragValue::new(&mut config.trim_minutes).range(0..=120)
-                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n} min") }));
+                setting(&mut cols[1], "Trim Roblox Every", "Frees unused RAM", |ui, id| {
+                    ui.add(egui::DragValue::new(&mut c.trim_minutes).range(0..=120)
+                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n} min") })).labelled_by(id);
                 });
-                ui.add_enabled_ui(admin, |ui| {
-                    setting(ui, "Clean When RAM Is Above", "Empties Windows' standby memory", |ui| {
-                        ui.add(egui::DragValue::new(&mut config.clean_above).range(0..=98)
-                            .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n}%") }));
-                    });
+                setting(&mut cols[2], "Clean RAM Above", "Empties standby RAM", |ui, id| {
+                    ui.add(egui::DragValue::new(&mut c.clean_above).range(0..=98)
+                        .custom_formatter(|n, _| if n == 0.0 { "Off".into() } else { format!("{n}%") })).labelled_by(id);
                 });
             });
         });
@@ -498,7 +506,7 @@ const GIB: f64 = (1u64 << 30) as f64;
 
 fn gb(bytes: u64) -> String {
     let g = bytes as f64 / GIB;
-    if g >= 1.0 { format!("{g:.1} GB") } else { format!("{:.0} MB", bytes as f64 / (1u64 << 20) as f64) }
+    if bytes >= 1000 << 20 { format!("{g:.1} GB") } else { format!("{:.0} MB", bytes as f64 / (1u64 << 20) as f64) }
 }
 
 fn semi(text: &str, size: f32) -> RichText {
@@ -550,7 +558,8 @@ fn row(ui: &mut Ui, key: &str, widths: &[f32], picked: bool, mut cell: impl FnMu
     let last = ui.ctx().data(|d| d.get_temp::<egui::Rect>(id));
     let resp = last.map(|r| ui.interact(r, id, Sense::click()));
     let fixed: f32 = widths.iter().sum();
-    let flex = (ui.available_width() - fixed - 16.0 - 8.0 * widths.len() as f32).max(80.0);
+    // the name column takes the spare width, up to a point: on a wide window the columns stay together
+    let flex = (ui.available_width() - fixed - 16.0 - 8.0 * widths.len() as f32).clamp(80.0, 280.0);
     let out = Frame::new().fill(if picked { RAISE } else { Color32::TRANSPARENT }).corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::symmetric(8, 8)).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -588,16 +597,18 @@ fn section(ui: &mut Ui, title: &str) {
     ui.add_space(2.0);
 }
 
-/// A label on the left (with an optional note under it) and its control on the right.
-fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui)) {
+/// A label on the left (with an optional note under it) and its control on the right. The control gets the
+/// label's id for `labelled_by`, so screen readers name it.
+fn setting(ui: &mut Ui, label: &str, note: &str, control: impl FnOnce(&mut Ui, egui::Id)) {
     ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(label).size(13.5).color(TEXT));
+        let id = ui.vertical(|ui| {
+            let id = ui.label(RichText::new(label).size(13.5).color(TEXT)).id;
             if !note.is_empty() {
                 ui.label(RichText::new(note).size(11.5).color(FAINT));
             }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);
+            id
+        }).inner;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| control(ui, id));
     });
     ui.add_space(4.0);
 }
@@ -622,7 +633,9 @@ fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &st
     Frame::new().fill(RAISE).stroke(Stroke::new(1.0, LINE)).corner_radius(CornerRadius::same(8)).inner_margin(Margin::same(2)).show(ui, |ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.horizontal(|ui| {
-            for (v, label) in options {
+            let rtl = ui.layout().main_dir() == egui::Direction::RightToLeft;   // inside a right-aligned row
+            let order: Vec<&(T, &str)> = if rtl { options.iter().rev().collect() } else { options.iter().collect() };
+            for (v, label) in order {
                 let on = *value == *v;
                 let b = egui::Button::new(RichText::new(*label).size(12.5).color(if on { ON_ACCENT } else { DIM }))
                     .fill(if on { ACCENT } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).corner_radius(CornerRadius::same(6))
@@ -665,6 +678,7 @@ fn style(ctx: &egui::Context) {
     fonts.font_data.insert("geist-semi".into(), Arc::new(egui::FontData::from_static(include_bytes!("../assets/fonts/Geist-SemiBold.ttf"))));
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "geist".into());
     fonts.families.insert(FontFamily::Name("semi".into()), vec!["geist-semi".into(), "geist".into()]);
+    ctx.set_missing_glyph_policy(egui::epaint::text::MissingGlyphPolicy::Tofu);
     ctx.set_fonts(fonts);
 
     let mut v = egui::Visuals::dark();

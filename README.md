@@ -38,7 +38,7 @@ Every Windows account on the PC (each RDP login is one) gets its own settings. P
 
 1. Download `Potato.exe` from the [latest release](https://github.com/birchrr/potato/releases/latest).
 2. Run it. Windows may warn because the app isn't signed: **More Info**, then **Run Anyway**.
-3. Click **Restart As Admin** to reach other accounts' Roblox (RDP logins) and to use Clean Memory.
+3. Say yes when Windows asks for admin. Potato needs it to reach other accounts' Roblox (RDP logins) and clean memory.
 
 Run it on the main account. Leave it open: it re-applies settings and trims memory while it runs.
 Its settings live in `C:\ProgramData\Potato\settings.json`.
@@ -73,7 +73,9 @@ cargo test --lib
 cargo build --release
 ```
 
-The settings logic is plain Rust and its tests run on any OS. The window and the Windows calls only build on Windows.
+The settings logic is plain Rust and its tests run on any OS. Off Windows the app builds against fake accounts
+(`src/system_demo.rs`), so `cargo test --test window -- --ignored` draws the real window to `target/window-*.png`
+(needs a GPU or a software Vulkan driver like lavapipe).
 
 ## License
 

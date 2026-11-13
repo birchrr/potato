@@ -80,7 +80,7 @@ pub fn run() {
     let me = crate::system::current_sid();
     let mut m = Maximizer::default();
     loop {
-        let config = std::fs::read_to_string(crate::app::config_path()).map(|t| potato::config::Config::from_json(&t)).unwrap_or_default();
+        let config = std::fs::read_to_string(crate::app::config_path()).map(|t| crate::config::Config::from_json(&t)).unwrap_or_default();
         let a = config.account(&me);
         if a.on && a.plan.maximized {
             m.tick();
