@@ -19,6 +19,10 @@
 </p>
 
 <p align="center">
+  <a href="https://youtu.be/lcW4hOJZ2IY"><img src="assets/trailer.jpg" width="820" alt="Watch the Potato trailer on YouTube"></a>
+</p>
+
+<p align="center">
   <img src="assets/screenshot.png" width="820" alt="The Potato window: accounts down the left, one account's settings on the right">
 </p>
 
