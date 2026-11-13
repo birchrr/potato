@@ -1,0 +1,20 @@
+[package]
+name = "potato"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Make every Roblox client on your PC run light, RDP sessions included. Safe with Natro Macro."
+repository = "https://github.com/birchrr/potato"
+
+[dependencies]
+serde_json = "1.0.154"
+
+[target."cfg(windows)".dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_RemoteDesktop", "Win32_Security", "Win32_Security_Authorization", "Win32_UI_Shell", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry"] }
+
+[profile.release]
+lto = true
+strip = true
+opt-level = "s"
+codegen-units = 1

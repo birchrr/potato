@@ -1,0 +1,27 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --lib
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Potato
+          path: target/release/potato.exe
+      - if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp target/release/potato.exe Potato.exe
+          sha256sum Potato.exe > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" Potato.exe SHA256SUMS.txt --title "Potato ${GITHUB_REF_NAME#v}" --notes "Download Potato.exe and run it. Windows may warn because the app isn't signed: More Info, then Run Anyway. SHA-256 is in SHA256SUMS.txt."

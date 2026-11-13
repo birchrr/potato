@@ -1,0 +1,226 @@
+//! Windows calls: Roblox clients in every session, their memory, Windows users, admin rights.
+
+use std::ffi::c_void;
+use std::path::PathBuf;
+
+use windows::core::{PCWSTR, PWSTR, w};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree, LUID};
+use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+use windows::Win32::Security::{
+    AdjustTokenPrivileges, GetTokenInformation, LookupAccountSidW, LookupPrivilegeValueW, SE_PRIVILEGE_ENABLED,
+    SID_NAME_USE, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::ProcessStatus::{K32EmptyWorkingSet, K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+use windows::Win32::System::Registry::{
+    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ, RegCloseKey, RegEnumKeyExW, RegGetValueW,
+    RegOpenKeyExW,
+};
+use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SET_QUOTA,
+};
+use windows::Win32::UI::Shell::{IsUserAnAdmin, ShellExecuteW};
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+const ROBLOX_EXE: &str = "RobloxPlayerBeta.exe";
+
+/// One running Roblox window, in any session (RDP users included).
+#[derive(Clone, Debug)]
+pub struct Client {
+    pub pid: u32,
+    pub session: u32,
+    /// the Windows account it runs as, as a SID string; matches `Profile::sid`
+    pub sid: String,
+    pub user: String,
+    pub ram: u64,
+}
+
+/// A Windows account on this PC that has Roblox installed.
+#[derive(Clone, Debug)]
+pub struct Profile {
+    pub sid: String,
+    pub name: String,
+    pub local: PathBuf,
+}
+
+pub fn is_admin() -> bool {
+    unsafe { IsUserAnAdmin().as_bool() }
+}
+
+/// Start Potato again with admin rights (Windows asks first) and let this copy close.
+pub fn relaunch_as_admin() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let exe: Vec<u16> = exe.as_os_str().encode_wide_z();
+    let r = unsafe { ShellExecuteW(None, w!("runas"), PCWSTR(exe.as_ptr()), None, None, SW_SHOWNORMAL) };
+    r.0 as usize > 32
+}
+
+/// Rights an admin has but has to switch on: reaching other users' processes, and emptying the standby list.
+pub fn enable_privileges() {
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &mut token).is_err() {
+            return;
+        }
+        for name in [w!("SeDebugPrivilege"), w!("SeProfileSingleProcessPrivilege"), w!("SeIncreaseQuotaPrivilege")] {
+            let mut luid = LUID::default();
+            if LookupPrivilegeValueW(None, name, &mut luid).is_ok() {
+                let mut tp = TOKEN_PRIVILEGES { PrivilegeCount: 1, ..Default::default() };
+                tp.Privileges[0].Luid = luid;
+                tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                let _ = AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None);
+            }
+        }
+        let _ = CloseHandle(token);
+    }
+}
+
+pub fn clients() -> Vec<Client> {
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
+        let mut e = PROCESSENTRY32W { dwSize: size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+            if String::from_utf16_lossy(&e.szExeFile[..len]).eq_ignore_ascii_case(ROBLOX_EXE) {
+                out.push(client(e.th32ProcessID));
+            }
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    out
+}
+
+fn client(pid: u32) -> Client {
+    let mut session = 0;
+    let _ = unsafe { ProcessIdToSessionId(pid, &mut session) };
+    let mut c = Client { pid, session, sid: String::new(), user: String::new(), ram: 0 };
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_QUERY_INFORMATION, false, pid)
+            .or_else(|_| OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid))
+        else {
+            return c;
+        };
+        let mut mem = PROCESS_MEMORY_COUNTERS::default();
+        if K32GetProcessMemoryInfo(h, &mut mem, size_of::<PROCESS_MEMORY_COUNTERS>() as u32).as_bool() {
+            c.ram = mem.WorkingSetSize as u64;
+        }
+        if let Some((sid, user)) = owner(h) {
+            c.sid = sid;
+            c.user = user;
+        }
+        let _ = CloseHandle(h);
+    }
+    c
+}
+
+/// The account a process runs as: (SID string, user name).
+unsafe fn owner(process: HANDLE) -> Option<(String, String)> {
+    let mut token = HANDLE::default();
+    unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token).ok()? };
+    let mut buf = vec![0u8; 256];
+    let mut len = 0;
+    let got = unsafe { GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr() as *mut c_void), buf.len() as u32, &mut len) };
+    let _ = unsafe { CloseHandle(token) };
+    got.ok()?;
+    let sid = unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid };
+    let mut text = PWSTR::null();
+    unsafe { ConvertSidToStringSidW(sid, &mut text).ok()? };
+    let sid_text = unsafe { text.to_string().unwrap_or_default() };
+    unsafe { LocalFree(Some(HLOCAL(text.0 as *mut c_void))) };
+    let (mut name, mut domain) = ([0u16; 256], [0u16; 256]);
+    let (mut nl, mut dl, mut use_) = (256u32, 256u32, SID_NAME_USE::default());
+    let user = unsafe {
+        LookupAccountSidW(None, sid, Some(PWSTR(name.as_mut_ptr())), &mut nl, Some(PWSTR(domain.as_mut_ptr())), &mut dl, &mut use_)
+    }
+    .map(|_| String::from_utf16_lossy(&name[..nl as usize]))
+    .unwrap_or_default();
+    Some((sid_text, user))
+}
+
+/// Move a client's memory out to the page file, like Mem Reduct does. Roblox pulls back what it uses.
+pub fn trim(pid: u32) -> bool {
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_INFORMATION, false, pid) else { return false };
+        let ok = K32EmptyWorkingSet(h).as_bool();
+        let _ = CloseHandle(h);
+        ok
+    }
+}
+
+#[link(name = "ntdll")]
+unsafe extern "system" {
+    fn NtSetSystemInformation(class: i32, info: *const c_void, len: u32) -> i32;
+}
+
+/// Empty Windows' standby list (cached memory nothing uses right now). Needs admin.
+pub fn clean_standby() -> bool {
+    const SYSTEM_MEMORY_LIST_INFORMATION: i32 = 80;
+    const MEMORY_PURGE_STANDBY_LIST: u32 = 4;
+    let cmd = MEMORY_PURGE_STANDBY_LIST;
+    unsafe { NtSetSystemInformation(SYSTEM_MEMORY_LIST_INFORMATION, &cmd as *const u32 as *const c_void, 4) >= 0 }
+}
+
+/// (in use, total) bytes of RAM.
+pub fn memory() -> (u64, u64) {
+    let mut m = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
+    if unsafe { GlobalMemoryStatusEx(&mut m) }.is_err() {
+        return (0, 0);
+    }
+    (m.ullTotalPhys - m.ullAvailPhys, m.ullTotalPhys)
+}
+
+/// Every Windows account on the PC with Roblox installed, from the registry's profile list.
+pub fn profiles() -> Vec<Profile> {
+    let mut out = Vec::new();
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_LOCAL_MACHINE, w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList"), None, KEY_READ, &mut key).is_err() {
+            return out;
+        }
+        for i in 0.. {
+            let mut name = [0u16; 256];
+            let mut len = 256u32;
+            if RegEnumKeyExW(key, i, Some(PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None).is_err() {
+                break;
+            }
+            let sid = String::from_utf16_lossy(&name[..len as usize]);
+            if !sid.starts_with("S-1-5-21-") {
+                continue;   // system accounts
+            }
+            let mut buf = [0u16; 520];
+            let mut size = (buf.len() * 2) as u32;
+            let sub: Vec<u16> = sid.encode_utf16().chain([0]).collect();
+            if RegGetValueW(key, PCWSTR(sub.as_ptr()), w!("ProfileImagePath"), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                            None, Some(buf.as_mut_ptr() as *mut c_void), Some(&mut size)).is_err() {
+                continue;
+            }
+            let home = PathBuf::from(String::from_utf16_lossy(&buf[..(size as usize / 2).saturating_sub(1)]));
+            let local = home.join("AppData").join("Local");
+            if local.join("Roblox").is_dir() {
+                let name = home.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| sid.clone());
+                out.push(Profile { sid, name, local });
+            }
+        }
+        let _ = RegCloseKey(key);
+    }
+    out
+}
+
+trait WideZ {
+    fn encode_wide_z(&self) -> Vec<u16>;
+}
+
+impl WideZ for std::ffi::OsStr {
+    fn encode_wide_z(&self) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        self.encode_wide().chain([0]).collect()
+    }
+}
