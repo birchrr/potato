@@ -558,8 +558,13 @@ pub fn gb(bytes: u64) -> String {
     if bytes >= 1000 << 20 { format!("{g:.1} GB") } else { format!("{:.0} MB", bytes as f64 / (1u64 << 20) as f64) }
 }
 
+/// The demo build shows the update banner when POTATO_DEMO_UPDATE is set, so a test render can check it.
 #[cfg(not(windows))]
-fn check_for_update(_: Update) {}
+fn check_for_update(update: Update) {
+    if std::env::var_os("POTATO_DEMO_UPDATE").is_some() {
+        *update.lock().unwrap() = UpdateState::Available(Release { tag: "v9.9.9".into(), exe_url: String::new(), sums_url: String::new() });
+    }
+}
 
 #[cfg(not(windows))]
 pub fn install_update(_: Release, _: Update) {}

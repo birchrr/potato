@@ -623,15 +623,21 @@ fn dropdown<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, label: egui::Id, value
     changed
 }
 
+/// The one white button on a screen, for the thing to do next: the header buttons' size and press, inverted.
 fn primary(ui: &mut Ui, text: &str) -> egui::Response {
-    ui.add(egui::Button::new(semi(text, 13.5).color(NAV)).fill(TEXT).stroke(Stroke::NONE).min_size(egui::vec2(0.0, 34.0)))
+    button(ui, text, false, true)
 }
 
 /// The page header's buttons: one size and style, so they line up. They squash a little when pressed and
 /// show a spinner while their work runs.
 fn action(ui: &mut Ui, text: &str, busy: bool) -> egui::Response {
-    let font = egui::FontId::proportional(13.5);
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font, TEXT);
+    button(ui, text, busy, false)
+}
+
+fn button(ui: &mut Ui, text: &str, busy: bool, primary: bool) -> egui::Response {
+    let font = if primary { egui::FontId::new(13.5, FontFamily::Name("semi".into())) } else { egui::FontId::proportional(13.5) };
+    let ink = if primary { NAV } else { TEXT };
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, ink);
     let size = egui::vec2((galley.size().x + 32.0 + if busy { 20.0 } else { 0.0 }).max(120.0), 36.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), text));
@@ -640,14 +646,18 @@ fn action(ui: &mut Ui, text: &str, busy: bool) -> egui::Response {
     let hover = ctx.animate_bool_with_time(resp.id.with("hover"), resp.hovered(), dur(0.12));
     let rect = egui::Rect::from_center_size(rect.center(), rect.size() * (1.0 - 0.04 * press));
     let p = ui.painter();
-    p.rect_filled(rect, 7.0, CARD_HI.lerp_to_gamma(Color32::from_gray(44), hover));
-    p.rect_stroke(rect, 7.0, Stroke::new(1.0, LINE.lerp_to_gamma(Color32::from_gray(90), hover)), egui::StrokeKind::Inside);
+    if primary {
+        p.rect_filled(rect, 7.0, TEXT.lerp_to_gamma(Color32::from_gray(205), hover));
+    } else {
+        p.rect_filled(rect, 7.0, CARD_HI.lerp_to_gamma(Color32::from_gray(44), hover));
+        p.rect_stroke(rect, 7.0, Stroke::new(1.0, LINE.lerp_to_gamma(Color32::from_gray(90), hover)), egui::StrokeKind::Inside);
+    }
     let mut x = rect.center().x - galley.size().x / 2.0;
     if busy {
         x += 10.0;
         egui::Spinner::new().size(14.0).color(DIM).paint_at(ui, egui::Rect::from_center_size(egui::pos2(x - 14.0, rect.center().y), egui::vec2(14.0, 14.0)));
     }
-    p.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, TEXT);
+    p.galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, ink);
     resp
 }
 
@@ -661,6 +671,8 @@ fn style(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 
     let mut v = egui::Visuals::dark();
+    // egui's dark-theme edge shading fattens dark text on the white buttons and toasts; gamma 1 keeps both clean
+    v.text_options.color_transfer_function = egui::epaint::FontColorTransferFunction::Gamma(1.0);
     v.panel_fill = BG;
     v.window_fill = CARD_HI;
     v.override_text_color = Some(TEXT);
