@@ -1,0 +1,21 @@
+# Potato's logo: a 16x14 pixel potato. Colour lines first (letter = hex), then the pixel map; . is empty.
+# The app's header, the icon files and the README logo are all drawn from this one map (scripts/icons.py).
+o=#5A3A1A outline
+b=#D9A35B body
+h=#F0C987 highlight
+s=#B07A3A shade
+e=#8A5A2B eye
+................
+.....oooooo.....
+...oobbbbbboo...
+..obhhbbbbbbbo..
+.obhbbbbbebbbbo.
+.obbbbbbbbbbbbo.
+obbbebbbbbbbbbso
+obbbbbbbbbbebbso
+obbbbbbbbbbbbbso
+.obbbbbebbbbbsso
+.obbbbbbbbbbsso.
+..osbbbbbbsssso.
+...ossssssssoo..
+....oooooooo....

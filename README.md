@@ -1,4 +1,6 @@
-# Potato
+<p align="center"><img src="assets/logo.svg" width="128" alt="Potato logo: a pixel potato"></p>
+
+<h1 align="center">Potato</h1>
 
 Run more Roblox on one PC. One small Windows app that puts **every Roblox client on your PC** on low:
 lowest graphics, a frame rate cap and trimmed RAM. That includes clients running in other Windows users' **RDP
@@ -57,6 +59,9 @@ Needs Windows 10 or 11, x64.
 - **Memory:** `EmptyWorkingSet` on each Roblox client and `NtSetSystemInformation` to purge the standby list.
 
 ## Build
+
+The logo lives in `assets/logo.txt` (a pixel map). After changing it, run `python scripts/icons.py` to redraw the icon files.
+
 
 ```powershell
 cargo test --lib

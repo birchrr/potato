@@ -18,14 +18,15 @@ const CARD: Color32 = Color32::from_rgb(20, 20, 22);
 const LINE: Color32 = Color32::from_rgb(38, 38, 42);
 const TEXT: Color32 = Color32::from_rgb(237, 237, 237);
 const DIM: Color32 = Color32::from_rgb(140, 140, 148);
-const ACCENT: Color32 = Color32::from_rgb(245, 184, 61);
+const ACCENT: Color32 = Color32::from_rgb(217, 163, 91);   // the logo's potato skin
 const GOOD: Color32 = Color32::from_rgb(74, 222, 128);
 const WARN: Color32 = Color32::from_rgb(248, 113, 113);
 
 pub fn run() -> eframe::Result {
     system::enable_privileges();
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Potato").with_inner_size([540.0, 780.0]).with_min_inner_size([460.0, 520.0]),
+        viewport: egui::ViewportBuilder::default().with_title("Potato")
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default()).with_inner_size([540.0, 780.0]).with_min_inner_size([460.0, 520.0]),
         ..Default::default()
     };
     eframe::run_native("Potato", options, Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))))
@@ -206,6 +207,8 @@ impl eframe::App for App {
 impl App {
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
+            logo(ui, 3.0);
+            ui.add_space(6.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new("Potato").size(26.0).strong().color(TEXT));
                 ui.label(RichText::new("Roblox On Low: Every Client On This PC, RDP Included").color(DIM));
@@ -383,6 +386,22 @@ impl App {
             });
             hint(ui, "Trimming moves memory Roblox isn't using right now to the page file. It doesn't change the game.");
         });
+    }
+}
+
+/// The pixel potato from assets/logo.txt, `px` points per pixel.
+fn logo(ui: &mut Ui, px: f32) {
+    let lines: Vec<&str> = include_str!("../assets/logo.txt").lines().filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+    let colors: HashMap<char, Color32> = lines.iter().filter(|l| l.get(1..2) == Some("="))
+        .filter_map(|l| Some((l.chars().next()?, Color32::from_hex(l.get(2..9)?).ok()?))).collect();
+    let rows: Vec<&str> = lines.into_iter().filter(|l| l.get(1..2) != Some("=")).collect();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(rows[0].len() as f32 * px, rows.len() as f32 * px), egui::Sense::hover());
+    for (y, row) in rows.iter().enumerate() {
+        for (x, k) in row.chars().enumerate() {
+            let Some(&color) = colors.get(&k) else { continue };
+            let min = rect.min + egui::vec2(x as f32 * px, y as f32 * px);
+            ui.painter().rect_filled(egui::Rect::from_min_size(min, egui::vec2(px, px)), 0.0, color);
+        }
     }
 }
 
