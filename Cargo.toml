@@ -1,6 +1,6 @@
 [package]
 name = "potato"
-version = "0.5.3"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Make every Roblox client on your PC run light, RDP logins included, with settings per account."

@@ -309,7 +309,7 @@ mod tests {
     use crate::report::Client;
 
     fn sample_data() -> (Pc, Vec<Account>, Vec<Sample>) {
-        let pc = Pc { used: 17 << 30, total: 32 << 30, freed: 3_650 << 20, version: "0.5.2" };
+        let pc = Pc { used: 17 << 30, total: 32 << 30, freed: 3_650 << 20, version: "0.1.0" };
         let acc = |name: &str, n: usize, ram: u64, freezes: u32, frozen: u32| Account {
             name: name.into(), on: true,
             clients: (0..n).map(|_| Client { ram: ram << 20, cpu: 6.5, up_minutes: 197 }).collect(),

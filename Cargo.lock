@@ -2907,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "potato"
-version = "0.5.3"
+version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "eframe",
