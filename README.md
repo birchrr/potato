@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://youtu.be/t63Px2Tbjvs"><img src="assets/trailer.jpg" width="820" alt="Watch the Potato trailer on YouTube"></a>
+  <a href="https://youtu.be/60MhHW1o3L8"><img src="assets/trailer.jpg" width="820" alt="Watch the Potato trailer on YouTube"></a>
 </p>
 
 <p align="center">
