@@ -77,7 +77,8 @@ pub struct Engine {
     crashed: Vec<(String, rejoin::Server, Instant)>,
     upload_applied: Option<u32>,
     shutdown_done: Option<u32>,
-    last_report: Instant,
+    /// the clock hour (0-23) the last scheduled report went out in, so each hour sends exactly one
+    reported_hour: u32,
     /// a look at RAM and CPU every 30 seconds since the last report, for the report's graphs
     history: Vec<crate::report::Sample>,
     history_start: Instant,
@@ -123,7 +124,7 @@ impl Engine {
             crashed: Vec::new(),
             upload_applied: None,
             shutdown_done: None,
-            last_report: Instant::now(),
+            reported_hour: system::local_minutes() / 60,   // the first report waits for the next full hour
             history: Vec::new(),
             history_start: Instant::now(),
             report_pending: None,
@@ -396,14 +397,16 @@ impl Engine {
             }
             return;
         }
-        if self.last_report.elapsed() >= Duration::from_secs(3600) {   // the report and its graphs cover one hour
+        // on the hour (2:00, 3:00, ...), whenever Potato was started; a few minutes' grace covers a busy tick
+        let now = system::local_minutes();
+        if now / 60 != self.reported_hour && now % 60 < 10 {
+            self.reported_hour = now / 60;
             self.send_report_now();
         }
     }
 
     /// Start a report right away (also the Send Test Report button).
     pub fn send_report_now(&mut self) {
-        self.last_report = Instant::now();
         if self.config.discord.screenshots {
             let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
             let dir = helper::report_dir();
@@ -477,7 +480,7 @@ impl Engine {
             self.helper_installed = Some(wanted);
             if wanted {
                 if !helper::install() {
-                    self.note = "Couldn't Set Up Open Maximized For RDP Accounts".into();
+                    self.note = "Couldn't Set Up Open Maximized For Remote Desktop Accounts".into();
                 }
             } else {
                 helper::uninstall();
@@ -485,26 +488,39 @@ impl Engine {
         }
     }
 
+    /// `say` also shows the result in the window; the Windows notification goes out either way (if it's on).
     pub fn trim_all(&mut self, say: bool) {
+        let (n, freed) = self.trim_clients();
+        self.tell(say, freed, format!("Trimmed {n} {}, Freed {}", if n == 1 { "Client" } else { "Clients" }, gb(freed)));
+    }
+
+    fn trim_clients(&mut self) -> (usize, u64) {
         self.last_trim = Instant::now();
         let before: u64 = self.clients.iter().map(|c| c.ram).sum();
         let n = self.clients.iter().filter(|c| system::trim(c.pid)).count();
         self.clients = system::clients();
         let freed = before.saturating_sub(self.clients.iter().map(|c| c.ram).sum());
         self.freed += freed;
-        if say {
-            self.note = format!("Trimmed {n} {}, Freed {}", if n == 1 { "Client" } else { "Clients" }, gb(freed));
-        }
+        (n, freed)
     }
 
     pub fn clean(&mut self, say: bool) {
         self.last_clean = Instant::now();
         let before = system::memory().0;
         let ok = system::clean_standby();
-        self.trim_all(false);
+        self.trim_clients();
         self.memory = system::memory();
+        let freed = before.saturating_sub(self.memory.0);
+        self.tell(say, if ok { freed } else { 1 }, if ok { format!("Cleaned Memory, Freed {}", gb(freed)) } else { "Couldn't Clean Memory".into() });
+    }
+
+    /// Nothing freed: no notification, so a timer trim of idle clients doesn't pop one up.
+    fn tell(&mut self, say: bool, freed: u64, text: String) {
+        if self.config.notify && freed > 0 {
+            system::notify(&text);
+        }
         if say {
-            self.note = if ok { format!("Cleaned Memory, Freed {}", gb(before.saturating_sub(self.memory.0))) } else { "Couldn't Clean Memory".into() };
+            self.note = text;
         }
     }
 

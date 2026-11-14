@@ -3,9 +3,18 @@
 use potato::{app, helper, system};
 
 fn main() -> eframe::Result {
-    // left behind by the last update (app.rs install_update)
+    // left behind by the last update (engine.rs install_update); the old copy may still be closing, and Windows
+    // won't delete a running exe, so keep trying for half a minute
     if let Ok(me) = std::env::current_exe() {
-        let _ = std::fs::remove_file(me.with_extension("old"));
+        let old = me.with_extension("old");
+        std::thread::spawn(move || {
+            for _ in 0..30 {
+                if std::fs::remove_file(&old).is_ok() || !old.exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
     }
     if std::env::args().any(|a| a == "--helper") {
         helper::run();   // runs as each logged-on user, without admin

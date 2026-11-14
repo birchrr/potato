@@ -117,6 +117,8 @@ pub fn clean_standby() -> bool {
     true
 }
 
+pub fn notify(_: &str) {}
+
 pub fn memory() -> (u64, u64) {
     let roblox: u64 = ACCOUNTS.iter().map(|a| ram(a.2)).sum();
     (19_560 * MB - ACCOUNTS.iter().map(|a| a.2 * MB).sum::<u64>() + roblox, 31_850 * MB)

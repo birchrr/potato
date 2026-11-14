@@ -212,7 +212,7 @@ impl App {
             .interactable(false).show(ctx, |ui| {
                 ui.set_opacity(come.min(1.0) * go);
                 Frame::new().fill(TEXT).corner_radius(CornerRadius::same(10)).inner_margin(Margin::symmetric(18, 11)).show(ui, |ui| {
-                    ui.label(semi(text, 13.5).color(NAV));
+                    ui.add(egui::Label::new(semi(text, 13.5).color(NAV)).extend());   // one line, never squeezed by the window edge
                 });
             });
         ctx.request_repaint();
@@ -384,7 +384,7 @@ impl App {
         group(ui, "Memory", |ui| {
             let list = [0, 1, 2, 5, 10, 15, 30].map(|n| (n, off_or(n, &|n| format!("Every {n} Min"))));
             row(ui, "Trim Roblox RAM", "Moves memory Roblox isn't using to the page file", false, |ui, id| { dropdown(ui, "trim", id, &mut c.trim_minutes, &list); });
-            row(ui, "Clean Memory", "Empties Windows' standby memory when RAM use goes over this. Empty for never", true, |ui, id| {
+            row(ui, "Clean Memory", "Empties Windows' standby memory when RAM use goes over this. Empty for never", false, |ui, id| {
                 ui.label(RichText::new("%").color(FAINT));
                 let mut text = if c.clean_above == 0 { String::new() } else { c.clean_above.to_string() };
                 if ui.add(egui::TextEdit::singleline(&mut text).desired_width(56.0).hint_text("Off").align(egui::Align2::CENTER_CENTER)).labelled_by(id).changed() {
@@ -392,6 +392,7 @@ impl App {
                     c.clean_above = text.parse::<u32>().unwrap_or(0).min(99);
                 }
             });
+            switch_row(ui, "Notifications", "A Windows notification each time a trim or clean frees RAM", true, &mut c.notify);
         });
         group(ui, "CPU", |ui| {
             let list: Vec<(u32, String)> = [0, 1, 2, 3, 4, 6, 8].into_iter().filter(|n| *n <= cores).map(|n| (n, off_or(n, &|n| format!("{n} Each")))).collect();
@@ -420,7 +421,7 @@ impl App {
                 if r.lost_focus() && let Some(t) = parsed {
                     *text = crate::config::format_time(t);   // show how it was understood
                 }
-                if !text.trim().is_empty() && parsed.is_none() {
+                if !r.has_focus() && !text.trim().is_empty() && parsed.is_none() {   // not while still typing
                     ui.label(RichText::new("Like 6:30 or 6pm").size(12.5).color(BAD));
                 }
             });
@@ -441,8 +442,8 @@ impl App {
                     ui.label(RichText::new("Not a Discord webhook").size(12.5).color(BAD));
                 }
             });
-            switch_row(ui, "Screenshots", "Adds each RDP's Roblox window. A minimized or disconnected one can't be captured", false, &mut c.discord.screenshots);
-            row(ui, "Test It", "Sends a report now. Potato sends one by itself every hour", true, |ui, id| {
+            switch_row(ui, "Screenshots", "Adds a picture of each Remote Desktop's Roblox. A minimized or disconnected one can't be captured", false, &mut c.discord.screenshots);
+            row(ui, "Test It", "Sends a report now. Potato sends one by itself on every hour", true, |ui, id| {
                 test = ui.add_enabled(!c.discord.webhook.is_empty(), egui::Button::new("Send Report")).labelled_by(id).clicked();
             });
         });
@@ -599,12 +600,21 @@ fn paint_switch(ui: &Ui, rect: egui::Rect, on: bool, pressed: bool, id: egui::Id
 }
 
 /// A box for a whole number up to `max`, with its unit after it; empty means 0 (off).
+/// A number that counts once typing is done (Enter or clicking away): while typing 2500 MB the limit would
+/// otherwise be 2, 25 and 250 MB for a moment, and clients over those would restart.
 fn number_box(ui: &mut Ui, label: egui::Id, value: &mut u32, max: u32, unit: &str, empty: &str) {
     ui.label(RichText::new(unit).color(FAINT));
-    let mut text = if *value == 0 { String::new() } else { value.to_string() };
-    if ui.add(egui::TextEdit::singleline(&mut text).desired_width(72.0).hint_text(empty).align(egui::Align2::CENTER_CENTER)).labelled_by(label).changed() {
-        text.retain(|c| c.is_ascii_digit());
-        *value = text.parse::<u32>().unwrap_or(0).min(max);
+    let draft = label.with("draft");
+    let mut text = ui.data(|d| d.get_temp::<String>(draft)).unwrap_or_else(|| if *value == 0 { String::new() } else { value.to_string() });
+    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(72.0).hint_text(empty).align(egui::Align2::CENTER_CENTER)).labelled_by(label);
+    text.retain(|c| c.is_ascii_digit());
+    if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(draft, text));
+    } else {
+        if r.lost_focus() {
+            *value = text.parse::<u32>().unwrap_or(0).min(max);
+        }
+        ui.data_mut(|d| d.remove::<String>(draft));
     }
 }
 

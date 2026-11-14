@@ -1,14 +1,14 @@
 //! Films the real window (fake accounts from src/system_demo.rs) being used, for the trailer: every frame at
-//! 30 fps to target/trailer/NNNNN.png with a big cursor drawn in, each click on a beat of a 117.5 BPM song, and
+//! 60 fps to target/trailer/NNNNN.png with a big cursor drawn in, each click on a beat of a 117.5 BPM song, and
 //! target/trailer/beats.json saying when each step happened. Needs a GPU or lavapipe:
 //! cargo test --test trailer -- --ignored
 #![cfg(not(windows))]
 
-use eframe::egui::{self, Event, Key, Modifiers, PointerButton, Pos2, Role, pos2};
+use eframe::egui::{self, Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, PointerButton, Pos2, Role, TouchPhase, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
-const FPS: f32 = 30.0;
+const FPS: f32 = 60.0;
 const BEAT: f32 = 60.0 / 117.5;
 const PPP: f32 = 1.5;   // 1280 x 720 points -> 1920 x 1080 pixels
 
@@ -57,7 +57,7 @@ impl Film {
     fn click(&mut self, name: &str) {
         let p = self.cursor;
         self.marks.push((name.to_string(), self.frame as f32 / FPS));
-        self.press = 3;
+        self.press = (0.1 * FPS) as u32;   // the cursor squashes for a tenth of a second
         self.h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
         self.shot();
         self.h.event(Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: false, modifiers: Modifiers::NONE });
@@ -76,6 +76,21 @@ impl Film {
 
     fn label(&self, label: &str) -> Pos2 {
         self.h.query_all_by_label(label).last().expect(label).rect().center()
+    }
+
+    /// Scroll the page under the cursor down by `points`, eased, arriving on the given beat.
+    fn scroll(&mut self, points: f32, arrive: f32) {
+        let (start, end) = (self.frame as f32, arrive * BEAT * FPS);
+        let mut done = 0.0;
+        while (self.frame as f32) < end {
+            let t = ((self.frame as f32 - start + 1.0) / (end - start)).clamp(0.0, 1.0);
+            let e = if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 };
+            let step = points * e - done;
+            done += step;
+            self.h.event(Event::MouseWheel { unit: MouseWheelUnit::Point, delta: vec2(0.0, -step), phase: TouchPhase::Move,
+                                            source: MouseWheelSource::Unknown, modifiers: Modifiers::NONE });
+            self.shot();
+        }
     }
 
     /// Select what's in the box, then type one character per beat from `first`, like a person would.
@@ -158,8 +173,29 @@ fn film_the_trailer() {
     let p = f.label("Every 10 Min"); f.glide(p, 18.0); f.click("trim-10min");
     // 6. Trim All Roblox, then hold on the result
     let p = f.at(Role::Button, "Trim All Roblox"); f.glide(p, 20.0); f.click("trim-all");
-    f.glide(pos2(1320.0, 820.0), 21.5);
-    f.until(24.5);
+    // 7. Alt1: cap its CPU, then further down restart it past 2500 MB, rejoin after crashes and mute it
+    let p = f.label("Alt1"); f.glide(p, 22.0); f.click("alt1");
+    let p = f.at(Role::TextInput, "CPU Limit"); f.glide(p, 23.0); f.click("cpu-limit");
+    f.type_text("25", 24.0);
+    let p = pos2(760.0, 420.0); f.glide(p, 26.0); f.scroll(330.0, 27.0);
+    let p = f.at(Role::TextInput, "Restart Memory Hogs"); f.glide(p, 28.0); f.click("ram-limit");
+    f.type_text("2500", 29.0);
+    let p = f.switch("Rejoin After A Crash"); f.glide(p, 33.0); f.click("rejoin");
+    let p = f.switch("Mute"); f.glide(p, 34.0); f.click("mute");
+    // 8. Whole PC: cap uploads, turn the PC off at 6am, paste a webhook and send a report
+    let p = f.label("Whole PC"); f.glide(p, 36.0); f.click("wholepc-2");
+    let p = pos2(760.0, 420.0); f.glide(p, 37.0); f.scroll(420.0, 38.0);
+    let p = f.at(Role::TextInput, "Upload Cap"); f.glide(p, 39.0); f.click("upload");
+    f.type_text("512", 40.0);
+    let p = f.at(Role::TextInput, "Turn PC Off At"); f.glide(p, 43.0); f.click("shutdown");
+    f.type_text("6am", 44.0);
+    let p = f.at(Role::TextInput, "Webhook"); f.glide(p, 47.0); f.click("webhook");
+    f.until(48.0);
+    f.h.event(Event::Paste("https://discord.com/api/webhooks/1438203347712/potato-trailer".into()));
+    f.shot();
+    let p = f.at(Role::Button, "Test It"); f.glide(p, 50.0); f.click("send-report");
+    f.glide(pos2(1320.0, 820.0), 51.5);
+    f.until(52.5);
 
     let json = serde_json::to_string_pretty(&f.marks.iter().map(|(n, t)| serde_json::json!({"step": n, "at": t})).collect::<Vec<_>>()).unwrap();
     std::fs::write(format!("{dir}/beats.json"), json).unwrap();

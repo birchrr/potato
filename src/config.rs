@@ -89,6 +89,8 @@ pub struct Config {
     pub upload_kbps: u32,
     /// turn the PC off at this time each day, "HH:MM" (empty = never)
     pub shutdown_at: String,
+    /// a Windows notification each time a trim or clean frees RAM
+    pub notify: bool,
     pub discord: Discord,
 }
 
@@ -112,7 +114,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             accounts: BTreeMap::new(), cores_per_client: 0, trim_minutes: 5, clean_above: 0, restart_hours: 0, upload_kbps: 0,
-            shutdown_at: String::new(), discord: Discord { webhook: String::new(), screenshots: true },
+            shutdown_at: String::new(), notify: true, discord: Discord { webhook: String::new(), screenshots: true },
         }
     }
 }
@@ -134,7 +136,7 @@ impl Config {
         }))).collect();
         serde_json::to_string_pretty(&json!({
             "accounts": accounts, "coresPerClient": self.cores_per_client, "trimMinutes": self.trim_minutes, "cleanAbove": self.clean_above,
-            "restartHours": self.restart_hours, "uploadKbps": self.upload_kbps, "shutdownAt": self.shutdown_at,
+            "restartHours": self.restart_hours, "uploadKbps": self.upload_kbps, "shutdownAt": self.shutdown_at, "notify": self.notify,
             "discord": { "webhook": self.discord.webhook, "screenshots": self.discord.screenshots },
         }))
         .unwrap()
@@ -173,6 +175,7 @@ impl Config {
             restart_hours: num(&v["restartHours"], d.restart_hours),
             upload_kbps: num(&v["uploadKbps"], d.upload_kbps),
             shutdown_at: v["shutdownAt"].as_str().and_then(parse_time).map(format_time).unwrap_or_default(),
+            notify: v["notify"].as_bool().unwrap_or(d.notify),
             discord: Discord {
                 webhook: v["discord"]["webhook"].as_str().filter(|u| Discord::valid_webhook(u)).unwrap_or_default().to_string(),
                 screenshots: v["discord"]["screenshots"].as_bool().unwrap_or(d.discord.screenshots),
@@ -248,7 +251,7 @@ mod tests {
     #[test]
     fn round_trips() {
         let mut c = Config { cores_per_client: 2, trim_minutes: 0, clean_above: 85, restart_hours: 6, upload_kbps: 512,
-                                shutdown_at: "06:30".into(), ..Config::default() };
+                                shutdown_at: "06:30".into(), notify: false, ..Config::default() };
         c.discord = Discord { webhook: "https://discord.com/api/webhooks/123/abc-DEF_9".into(), screenshots: false };
         c.account_mut("S-1-5-21-4").mute = true;
         c.account_mut("S-1-5-21-4").cpu_limit = 25;

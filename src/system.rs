@@ -339,6 +339,38 @@ pub fn clean_standby() -> bool {
     unsafe { NtSetSystemInformation(SYSTEM_MEMORY_LIST_INFORMATION, &cmd as *const u32 as *const c_void, 4) >= 0 }
 }
 
+/// A Windows notification from Potato's tray icon, like Mem Reduct's (Windows shows tray balloons as toasts).
+pub fn notify(text: &str) {
+    use windows::Win32::UI::Shell::{NIF_INFO, NIIF_LARGE_ICON, NIIF_USER, NIM_MODIFY, NOTIFYICONDATAW, Shell_NotifyIconW};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId};
+    unsafe {
+        // the tray-icon crate's hidden window for our icon; shortcut: assumes Potato's one tray icon has id 1
+        let mut hwnd = FindWindowExW(None, None, w!("tray_icon_app"), PCWSTR::null());
+        while let Ok(h) = hwnd {
+            let mut pid = 0;
+            GetWindowThreadProcessId(h, Some(&mut pid));
+            if pid == std::process::id() {
+                break;
+            }
+            hwnd = FindWindowExW(None, Some(h), w!("tray_icon_app"), PCWSTR::null());
+        }
+        let Ok(hwnd) = hwnd else { return };
+        let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
+        nid.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_USER | NIIF_LARGE_ICON;   // the potato icon, not a stock one
+        for (dst, src) in [(&mut nid.szInfoTitle[..], "Potato"), (&mut nid.szInfo[..], text)] {
+            let room = dst.len() - 1;   // the last one stays 0, ending the text
+            for (d, c) in dst.iter_mut().take(room).zip(src.encode_utf16()) {
+                *d = c;
+            }
+        }
+        let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
 /// (in use, total) bytes of RAM.
 pub fn memory() -> (u64, u64) {
     let mut m = MEMORYSTATUSEX { dwLength: size_of::<MEMORYSTATUSEX>() as u32, ..Default::default() };
