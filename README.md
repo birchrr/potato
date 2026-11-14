@@ -7,15 +7,15 @@
 <p align="center"><b>Run more Roblox on one PC.</b></p>
 
 <p align="center">
-  <a href="https://github.com/birchrr/potato/releases/latest"><img src="https://img.shields.io/github/v/release/birchrr/potato?style=flat-square&color=D9A35B&label=release" alt="Latest release"></a>
-  <a href="https://github.com/birchrr/potato/releases"><img src="https://img.shields.io/github/downloads/birchrr/potato/total?style=flat-square&color=D9A35B&label=downloads" alt="Downloads"></a>
-  <a href="https://github.com/birchrr/potato/stargazers"><img src="https://img.shields.io/github/stars/birchrr/potato?style=flat-square&color=D9A35B&label=stars" alt="GitHub stars"></a>
+  <a href="https://github.com/birchir/potato/releases/latest"><img src="https://img.shields.io/github/v/release/birchir/potato?style=flat-square&color=D9A35B&label=release" alt="Latest release"></a>
+  <a href="https://github.com/birchir/potato/releases"><img src="https://img.shields.io/github/downloads/birchir/potato/total?style=flat-square&color=D9A35B&label=downloads" alt="Downloads"></a>
+  <a href="https://github.com/birchir/potato/stargazers"><img src="https://img.shields.io/github/stars/birchir/potato?style=flat-square&color=D9A35B&label=stars" alt="GitHub stars"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-555?style=flat-square" alt="Windows 10 and 11">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-555?style=flat-square" alt="MIT license"></a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/birchrr/potato/releases/latest"><b>Download Potato.exe</b></a>
+  <a href="https://github.com/birchir/potato/releases/latest"><b>Download Potato.exe</b></a>
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@ On a PC running 4 clients, one click of **Trim All Roblox** freed 3.4 GB.
 
 ## Install
 
-1. Download `Potato.exe` from the [latest release](https://github.com/birchrr/potato/releases/latest).
+1. Download `Potato.exe` from the [latest release](https://github.com/birchir/potato/releases/latest).
 2. Run it. Windows warns about apps that aren't signed yet: click **More Info**, then **Run Anyway**.
 3. Say yes to the admin prompt. Potato needs it to reach Roblox in other accounts' RDP logins.
 

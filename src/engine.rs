@@ -17,7 +17,7 @@ use crate::version::Release;
 const TICK: Duration = Duration::from_secs(2);
 const UPDATE_EVERY: Duration = Duration::from_secs(10 * 60);   // GitHub allows 60 signed-out checks an hour per PC
 #[cfg(windows)]
-const RELEASES: &str = "https://api.github.com/repos/birchrr/potato/releases/latest";
+const RELEASES: &str = "https://api.github.com/repos/birchir/potato/releases/latest";
 
 /// Potato's settings file, readable by every Windows user (the helpers read it from their own sessions).
 pub fn config_path() -> PathBuf {
